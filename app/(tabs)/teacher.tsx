@@ -29,13 +29,10 @@ function toLocalISO(date: Date): string {
 
 function formatDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
-
-  const month = date.toLocaleString('en-US', {
-    month: 'short',
-  });
+  const month = date.toLocaleString('en-US', { month: 'short' });
 
   return `${month} ${pad(date.getDate())}, ${date.getFullYear()} at ${pad(
-    date.getHours()
+    date.getHours(),
   )}:${pad(date.getMinutes())}`;
 }
 
@@ -60,7 +57,7 @@ export default function TeacherScreen() {
 
   const [startDate, setStartDate] = useState(() => new Date());
   const [endDate, setEndDate] = useState(
-    () => new Date(Date.now() + 60 * 60 * 1000)
+    () => new Date(Date.now() + 60 * 60 * 1000),
   );
 
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
@@ -78,8 +75,14 @@ export default function TeacherScreen() {
   } | null>(null);
 
   const [message, setMessage] = useState<string | null>(null);
-  const [messageType, setMessageType] = useState<'success' | 'error'>('success');
+  const [messageType, setMessageType] = useState<'success' | 'error'>(
+    'success',
+  );
   const [saving, setSaving] = useState(false);
+
+  const isAndroid = Platform.OS === 'android';
+  const isAdmin = role === 'admin';
+  const isTeacher = role === 'teacher';
 
   useFocusEffect(
     useCallback(() => {
@@ -98,10 +101,13 @@ export default function TeacherScreen() {
 
       getProfile(user.id)
         .then((profile) => {
-          if (active) setRole(profile?.role ?? 'student');
+          if (active) {
+            setRole(profile?.role ?? 'student');
+          }
         })
-        .catch(() => {
-          if (active) setRole('student');
+        .catch((error) => {
+          console.error('Unable to load user profile:', error);
+          if (active) setRole(null);
         })
         .finally(() => {
           if (active) setRoleLoading(false);
@@ -110,10 +116,8 @@ export default function TeacherScreen() {
       return () => {
         active = false;
       };
-    }, [user])
+    }, [user]),
   );
-
-  const isAndroid = Platform.OS === 'android';
 
   const openPicker = (target: EditTarget) => {
     setMessage(null);
@@ -123,7 +127,7 @@ export default function TeacherScreen() {
 
   const onPickerChange = (
     event: DateTimePickerEvent,
-    selected?: Date
+    selected?: Date,
   ) => {
     if (!editTarget) return;
 
@@ -139,9 +143,8 @@ export default function TeacherScreen() {
     next.setFullYear(
       selected.getFullYear(),
       selected.getMonth(),
-      selected.getDate()
+      selected.getDate(),
     );
-
     next.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
 
     if (editTarget === 'start') {
@@ -169,6 +172,12 @@ export default function TeacherScreen() {
     setMessage(null);
     setPayload(null);
     setCreatedEvent(null);
+
+    if (!user || (!isAdmin && !isTeacher)) {
+      setMessageType('error');
+      setMessage('Your account is not authorized to create events.');
+      return;
+    }
 
     const trimmedEventId = eventId.trim().toUpperCase();
     const trimmedTitle = title.trim();
@@ -217,7 +226,7 @@ export default function TeacherScreen() {
         toLocalISO(endDate),
         trimmedDescription,
         trimmedLocation,
-        trimmedEventId
+        trimmedEventId,
       );
 
       if (error || !event) {
@@ -245,16 +254,15 @@ export default function TeacherScreen() {
           title: eventData.title,
           start: eventData.start,
           end: eventData.end,
-        })
+        }),
       );
     } catch (error) {
       console.error('handleCreateEvent failed:', error);
       setMessageType('error');
-
       setMessage(
         error instanceof Error
           ? error.message
-          : 'Could not save the event. Check your connection and try again.'
+          : 'Could not save the event. Check your connection and try again.',
       );
     } finally {
       setSaving(false);
@@ -270,7 +278,7 @@ export default function TeacherScreen() {
     );
   }
 
-  if (!user || (role !== 'teacher' && role !== 'admin')) {
+  if (!user || (!isTeacher && !isAdmin)) {
     return (
       <View style={styles.lockContainer}>
         <View style={styles.lockIcon}>
@@ -284,12 +292,14 @@ export default function TeacherScreen() {
         <Text style={styles.lockTitle}>Teachers and Admins Only</Text>
 
         <Text style={styles.lockSubtitle}>
-          Only teacher and admin accounts can create school events and generate
-          attendance QR codes.
+          Only teacher and administrator accounts can create school events
+          and generate attendance QR codes.
         </Text>
       </View>
     );
   }
+
+  const roleLabel = isAdmin ? 'ADMINISTRATOR' : 'TEACHER';
 
   return (
     <ScrollView
@@ -298,7 +308,7 @@ export default function TeacherScreen() {
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
-      {/* Page heading */}
+      {/* PAGE HEADING */}
       <View style={styles.pageHeading}>
         <View style={styles.headingIcon}>
           <Ionicons
@@ -311,26 +321,46 @@ export default function TeacherScreen() {
         <View style={styles.headingText}>
           <Text style={styles.title}>Create Event</Text>
           <Text style={styles.subtitle}>
-            Set up an event and generate its attendance QR code.
+            Set up a school event and generate its attendance QR code.
           </Text>
         </View>
       </View>
 
-      {/* Information banner */}
+      {/* ROLE INDICATOR */}
+      <View style={styles.roleBanner}>
+        <View style={styles.roleBannerIcon}>
+          <Ionicons
+            name={isAdmin ? 'shield-checkmark-outline' : 'school-outline'}
+            size={20}
+            color={COLORS.primary}
+          />
+        </View>
+
+        <View style={styles.roleBannerContent}>
+          <Text style={styles.roleBannerTitle}>
+            {isAdmin ? 'Administrator Access' : 'Teacher Access'}
+          </Text>
+          <Text style={styles.roleBannerText}>
+            Signed in as {roleLabel.toLowerCase()}. You can create school
+            events using this screen.
+          </Text>
+        </View>
+      </View>
+
+      {/* INFORMATION BANNER */}
       <View style={styles.infoBanner}>
         <Ionicons
           name="information-circle-outline"
           size={22}
           color={COLORS.primary}
         />
-
         <Text style={styles.infoBannerText}>
-          Complete the event details below. Once saved, your QR code will be
-          ready for students to scan.
+          Complete the event details below. After the event is saved, its QR
+          code will be generated for attendance scanning.
         </Text>
       </View>
 
-      {/* Event details */}
+      {/* EVENT DETAILS */}
       <View style={styles.card}>
         <View style={styles.sectionHeading}>
           <View style={styles.sectionIcon}>
@@ -350,7 +380,6 @@ export default function TeacherScreen() {
         </View>
 
         <FieldLabel title="Event Title" required />
-
         <TextInput
           style={styles.input}
           value={title}
@@ -362,7 +391,6 @@ export default function TeacherScreen() {
         />
 
         <FieldLabel title="Event Code" required />
-
         <TextInput
           style={styles.input}
           value={eventId}
@@ -374,13 +402,11 @@ export default function TeacherScreen() {
           editable={!saving}
           maxLength={50}
         />
-
         <Text style={styles.fieldHint}>
           Use a unique code for this event.
         </Text>
 
         <FieldLabel title="Location" required />
-
         <TextInput
           style={styles.input}
           value={location}
@@ -393,11 +419,9 @@ export default function TeacherScreen() {
         />
 
         <FieldLabel title="Event Description" required />
-
         <Text style={styles.fieldHint}>
-          Explain the event's purpose and what participants can expect.
+          Explain the event&apos;s purpose and what participants can expect.
         </Text>
-
         <TextInput
           style={[styles.input, styles.descriptionInput]}
           value={description}
@@ -409,13 +433,12 @@ export default function TeacherScreen() {
           maxLength={1000}
           editable={!saving}
         />
-
         <Text style={styles.characterCount}>
           {description.length}/1000 characters
         </Text>
       </View>
 
-      {/* Event schedule */}
+      {/* EVENT SCHEDULE */}
       <View style={styles.card}>
         <View style={styles.sectionHeading}>
           <View style={styles.sectionIcon}>
@@ -435,7 +458,6 @@ export default function TeacherScreen() {
         </View>
 
         <FieldLabel title="Start Date and Time" required />
-
         <PickerField
           value={formatDateTime(startDate)}
           icon="play-circle-outline"
@@ -444,7 +466,6 @@ export default function TeacherScreen() {
         />
 
         <FieldLabel title="End Date and Time" required />
-
         <PickerField
           value={formatDateTime(endDate)}
           icon="stop-circle-outline"
@@ -492,32 +513,7 @@ export default function TeacherScreen() {
         )}
       </View>
 
-      {/* Announcement placeholder */}
-      <View style={styles.announcementCard}>
-        <View style={styles.announcementIcon}>
-          <Ionicons
-            name="megaphone-outline"
-            size={23}
-            color={COLORS.primary}
-          />
-        </View>
-
-        <View style={styles.announcementContent}>
-          <View style={styles.announcementTitleRow}>
-            <Text style={styles.announcementTitle}>Announcements</Text>
-            <View style={styles.phaseBadge}>
-              <Text style={styles.phaseBadgeText}>PHASE 2</Text>
-            </View>
-          </View>
-
-          <Text style={styles.announcementText}>
-            Event announcements and updates will be available in a future
-            update.
-          </Text>
-        </View>
-      </View>
-
-      {/* Feedback */}
+      {/* FEEDBACK */}
       {message && (
         <View
           style={[
@@ -557,7 +553,7 @@ export default function TeacherScreen() {
         </View>
       )}
 
-      {/* Create event action */}
+      {/* CREATE EVENT */}
       <View style={styles.actionContainer}>
         <AppButton
           theme="primary"
@@ -566,12 +562,20 @@ export default function TeacherScreen() {
           onPress={handleCreateEvent}
         />
 
+        {saving && (
+          <ActivityIndicator
+            size="small"
+            color={COLORS.primary}
+            style={styles.savingIndicator}
+          />
+        )}
+
         <Text style={styles.actionHint}>
           Check your event details before saving.
         </Text>
       </View>
 
-      {/* Created event and QR code */}
+      {/* CREATED EVENT AND QR CODE */}
       {payload && createdEvent && (
         <View style={styles.resultCard}>
           <View style={styles.resultHeader}>
@@ -584,10 +588,9 @@ export default function TeacherScreen() {
             </View>
 
             <Text style={styles.resultTitle}>Event Created Successfully</Text>
-
             <Text style={styles.resultSubtitle}>
-              Your event has been saved. Students can scan this QR code to test
-              attendance.
+              Your event has been saved. Students can scan this QR code to
+              record attendance.
             </Text>
           </View>
 
@@ -597,31 +600,26 @@ export default function TeacherScreen() {
               label="Event Code"
               value={createdEvent.eventId}
             />
-
             <InfoRow
               icon="text-outline"
               label="Title"
               value={createdEvent.title}
             />
-
             <InfoRow
               icon="location-outline"
               label="Location"
               value={createdEvent.location}
             />
-
             <InfoRow
               icon="document-text-outline"
               label="Description"
               value={createdEvent.description}
             />
-
             <InfoRow
               icon="calendar-outline"
               label="Starts"
               value={formatDateTime(new Date(createdEvent.start))}
             />
-
             <InfoRow
               icon="time-outline"
               label="Ends"
@@ -653,7 +651,9 @@ export default function TeacherScreen() {
         </View>
       )}
 
-      <Text style={styles.footerText}>QR Attendance · Teacher Dashboard</Text>
+      <Text style={styles.footerText}>
+        QR Attendance · {isAdmin ? 'Administrator' : 'Teacher'} Workspace
+      </Text>
     </ScrollView>
   );
 }
@@ -739,13 +739,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   content: {
     paddingHorizontal: 20,
     paddingTop: 22,
     paddingBottom: 36,
   },
-
   lockContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -753,7 +751,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 28,
   },
-
   lockIcon: {
     width: 76,
     height: 76,
@@ -762,7 +759,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   lockTitle: {
     fontSize: 21,
     fontWeight: '700',
@@ -770,7 +766,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     textAlign: 'center',
   },
-
   lockSubtitle: {
     fontSize: 14,
     color: COLORS.textSecondary,
@@ -778,13 +773,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
     textAlign: 'center',
   },
-
   pageHeading: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 18,
   },
-
   headingIcon: {
     width: 58,
     height: 58,
@@ -794,25 +787,54 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 14,
   },
-
   headingText: {
     flex: 1,
   },
-
   title: {
     fontSize: 24,
     fontWeight: '800',
     color: COLORS.textPrimary,
     letterSpacing: -0.5,
   },
-
   subtitle: {
     fontSize: 13,
     color: COLORS.textSecondary,
     lineHeight: 19,
     marginTop: 4,
   },
-
+  roleBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 14,
+    padding: 13,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 14,
+    gap: 11,
+  },
+  roleBannerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  roleBannerContent: {
+    flex: 1,
+  },
+  roleBannerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  roleBannerText: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    lineHeight: 16,
+    marginTop: 3,
+  },
   infoBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -822,14 +844,12 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     gap: 10,
   },
-
   infoBannerText: {
     flex: 1,
     fontSize: 13,
     lineHeight: 20,
     color: COLORS.textPrimary,
   },
-
   card: {
     backgroundColor: COLORS.card,
     borderRadius: 20,
@@ -838,13 +858,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 18,
   },
-
   sectionIcon: {
     width: 42,
     height: 42,
@@ -854,24 +872,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 12,
   },
-
   sectionHeadingText: {
     flex: 1,
   },
-
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.textPrimary,
   },
-
   sectionSubtitle: {
     fontSize: 12,
     lineHeight: 18,
     color: COLORS.textSecondary,
     marginTop: 3,
   },
-
   label: {
     fontSize: 13,
     fontWeight: '700',
@@ -879,11 +893,9 @@ const styles = StyleSheet.create({
     marginBottom: 7,
     marginTop: 12,
   },
-
   required: {
     color: COLORS.danger,
   },
-
   input: {
     backgroundColor: COLORS.background,
     borderRadius: 12,
@@ -894,26 +906,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textPrimary,
   },
-
   descriptionInput: {
     minHeight: 115,
     paddingTop: 13,
   },
-
   fieldHint: {
     fontSize: 12,
     color: COLORS.textSecondary,
     lineHeight: 18,
     marginTop: 7,
   },
-
   characterCount: {
     fontSize: 11,
     color: COLORS.textSecondary,
     textAlign: 'right',
     marginTop: 6,
   },
-
   pickerField: {
     backgroundColor: COLORS.background,
     borderRadius: 13,
@@ -924,11 +932,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   pickerFieldPressed: {
     backgroundColor: COLORS.surface,
   },
-
   pickerLeadingIcon: {
     width: 36,
     height: 36,
@@ -937,7 +943,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   pickerValue: {
     flex: 1,
     fontSize: 13,
@@ -946,7 +951,6 @@ const styles = StyleSheet.create({
     marginHorizontal: 10,
     lineHeight: 19,
   },
-
   quickLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -954,13 +958,11 @@ const styles = StyleSheet.create({
     marginTop: 17,
     marginBottom: 9,
   },
-
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
   },
-
   chip: {
     backgroundColor: COLORS.surface,
     borderRadius: 999,
@@ -970,87 +972,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
-
   chipPressed: {
     opacity: 0.7,
   },
-
   chipText: {
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.primary,
   },
-
   disabled: {
     opacity: 0.55,
   },
-
   pickerContainer: {
     marginTop: 14,
     alignItems: 'center',
     overflow: 'hidden',
   },
-
-  announcementCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: COLORS.card,
-    borderRadius: 18,
-    padding: 16,
-    marginBottom: 18,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderStyle: 'dashed',
-  },
-
-  announcementIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-
-  announcementContent: {
-    flex: 1,
-  },
-
-  announcementTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-
-  announcementTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: COLORS.textPrimary,
-  },
-
-  phaseBadge: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 6,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-  },
-
-  phaseBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: COLORS.primary,
-    letterSpacing: 0.5,
-  },
-
-  announcementText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: COLORS.textSecondary,
-    marginTop: 7,
-  },
-
   messageBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1059,33 +996,30 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     gap: 9,
   },
-
   successMessage: {
     backgroundColor: '#E8F4EC',
   },
-
   errorMessage: {
     backgroundColor: '#FCEBE9',
   },
-
   messageText: {
     flex: 1,
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '600',
   },
-
   actionContainer: {
     marginBottom: 10,
   },
-
+  savingIndicator: {
+    marginTop: 10,
+  },
   actionHint: {
     fontSize: 11,
     color: COLORS.textSecondary,
     textAlign: 'center',
     marginTop: 10,
   },
-
   resultCard: {
     backgroundColor: COLORS.card,
     borderRadius: 20,
@@ -1095,13 +1029,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     alignItems: 'center',
   },
-
   resultHeader: {
     alignItems: 'center',
     width: '100%',
     marginBottom: 18,
   },
-
   resultSuccessIcon: {
     width: 58,
     height: 58,
@@ -1111,14 +1043,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 10,
   },
-
   resultTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: COLORS.textPrimary,
     textAlign: 'center',
   },
-
   resultSubtitle: {
     fontSize: 13,
     color: COLORS.textSecondary,
@@ -1126,7 +1056,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 7,
   },
-
   eventInformation: {
     width: '100%',
     backgroundColor: COLORS.background,
@@ -1134,13 +1063,11 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 20,
   },
-
   eventInformationRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     marginVertical: 7,
   },
-
   infoIcon: {
     width: 32,
     height: 32,
@@ -1149,13 +1076,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   infoTextContainer: {
     flex: 1,
     marginLeft: 10,
     paddingTop: 1,
   },
-
   infoLabel: {
     fontSize: 10,
     fontWeight: '800',
@@ -1164,13 +1089,11 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-
   eventInformationText: {
     fontSize: 13,
     color: COLORS.textPrimary,
     lineHeight: 19,
   },
-
   qrHeading: {
     fontSize: 15,
     fontWeight: '800',
@@ -1178,7 +1101,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 14,
   },
-
   qrBox: {
     backgroundColor: '#FFFFFF',
     padding: 15,
@@ -1186,7 +1108,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-
   qrHint: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1194,13 +1115,11 @@ const styles = StyleSheet.create({
     marginTop: 13,
     gap: 7,
   },
-
   qrHintText: {
     fontSize: 12,
     color: COLORS.textSecondary,
     flexShrink: 1,
   },
-
   payloadLabel: {
     fontSize: 10,
     fontWeight: '800',
@@ -1209,14 +1128,12 @@ const styles = StyleSheet.create({
     marginTop: 18,
     marginBottom: 6,
   },
-
   payloadText: {
     fontSize: 11,
     color: COLORS.textSecondary,
     textAlign: 'center',
     lineHeight: 17,
   },
-
   footerText: {
     fontSize: 11,
     color: COLORS.textSecondary,

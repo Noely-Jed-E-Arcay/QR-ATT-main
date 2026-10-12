@@ -1,3 +1,4 @@
+
 import { Stack } from 'expo-router';
 import { COLORS } from '@/constants/colors';
 
@@ -60,6 +61,13 @@ export default function AdministratorLayout() {
         name="teacher-requests"
         options={{
           title: 'Teacher Verification',
+        }}
+      />
+
+      <Stack.Screen
+        name="announcements"
+        options={{
+          headerShown: false,
         }}
       />
     </Stack>

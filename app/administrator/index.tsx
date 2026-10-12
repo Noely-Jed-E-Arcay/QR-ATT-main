@@ -37,7 +37,9 @@ export default function AdministratorDashboard() {
   const loadDashboard = useCallback(async () => {
     if (!user) {
       setDashboard(null);
+      setAdminName('Administrator');
       setLoading(false);
+      setError('Please sign in to view the administrator dashboard.');
       return;
     }
 
@@ -55,10 +57,12 @@ export default function AdministratorDashboard() {
         setDashboard(dashboardResult.data);
       }
 
-      setAdminName(profile?.full_name || 'Administrator');
+      setAdminName(profile?.full_name?.trim() || 'Administrator');
     } catch (err) {
       console.error('Failed to load administrator dashboard:', err);
-      setError('Unable to load dashboard information. Please try again.');
+      setError(
+        'Unable to load dashboard information. Please try again.',
+      );
     } finally {
       setLoading(false);
     }
@@ -66,12 +70,24 @@ export default function AdministratorDashboard() {
 
   useFocusEffect(
     useCallback(() => {
-      loadDashboard();
-    }, [loadDashboard])
+      let active = true;
+
+      const load = async () => {
+        if (!active) return;
+        await loadDashboard();
+      };
+
+      void load();
+
+      return () => {
+        active = false;
+      };
+    }, [loadDashboard]),
   );
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
+
     try {
       await loadDashboard();
     } finally {
@@ -244,8 +260,15 @@ export default function AdministratorDashboard() {
             <Text style={styles.errorText}>{error}</Text>
 
             <Pressable
-              onPress={loadDashboard}
-              style={styles.retryButton}
+              accessibilityRole="button"
+              onPress={() => {
+                setLoading(true);
+                void loadDashboard();
+              }}
+              style={({ pressed }) => [
+                styles.retryButton,
+                pressed && styles.pressed,
+              ]}
             >
               <Text style={styles.retryText}>Try again</Text>
             </Pressable>
@@ -325,39 +348,6 @@ export default function AdministratorDashboard() {
         ))}
       </View>
 
-      {/* ANNOUNCEMENTS */}
-      <SectionHeading
-        title="Announcements"
-        subtitle="School community updates"
-        icon="megaphone-outline"
-      />
-
-      <View style={styles.announcementCard}>
-        <View style={styles.announcementIcon}>
-          <Ionicons
-            name="notifications-outline"
-            size={22}
-            color={COLORS.primary}
-          />
-        </View>
-
-        <View style={styles.announcementBody}>
-          <View style={styles.announcementTop}>
-            <Text style={styles.announcementTitle}>
-              School Announcements
-            </Text>
-
-            <View style={styles.comingSoonBadge}>
-              <Text style={styles.comingSoonText}>PHASE 2</Text>
-            </View>
-          </View>
-
-          <Text style={styles.announcementDescription}>
-            Announcements and unread updates will be available in a future update.
-          </Text>
-        </View>
-      </View>
-
       {/* RECENT ATTENDANCE */}
       <SectionHeading
         title="Recent Attendance"
@@ -385,19 +375,13 @@ export default function AdministratorDashboard() {
               </View>
 
               <View style={styles.activityBody}>
-                <Text
-                  style={styles.activityTitle}
-                  numberOfLines={1}
-                >
+                <Text style={styles.activityTitle} numberOfLines={1}>
                   {record.student_name ||
                     record.student_email ||
                     record.student_id}
                 </Text>
 
-                <Text
-                  style={styles.activityEvent}
-                  numberOfLines={2}
-                >
+                <Text style={styles.activityEvent} numberOfLines={2}>
                   {record.event_title}
                 </Text>
 
@@ -481,11 +465,7 @@ function SectionHeading({
       </View>
 
       <View style={styles.sectionIcon}>
-        <Ionicons
-          name={icon}
-          size={20}
-          color={COLORS.primary}
-        />
+        <Ionicons name={icon} size={20} color={COLORS.primary} />
       </View>
     </View>
   );
@@ -512,11 +492,7 @@ function StatCard({
       ]}
     >
       <View style={styles.statIcon}>
-        <Ionicons
-          name={icon}
-          size={19}
-          color={COLORS.primary}
-        />
+        <Ionicons name={icon} size={19} color={COLORS.primary} />
       </View>
 
       <Text style={styles.statValue}>
@@ -573,18 +549,14 @@ function ManagementCard({
 
       <Text
         style={styles.managementDescription}
-        numberOfLines={2}
+        numberOfLines={3}
       >
         {description}
       </Text>
 
       <View style={styles.managementFooter}>
         <Text style={styles.openLabel}>Open</Text>
-        <Ionicons
-          name="arrow-forward"
-          size={14}
-          color={color}
-        />
+        <Ionicons name="arrow-forward" size={14} color={color} />
       </View>
     </Pressable>
   );
@@ -962,66 +934,6 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 10,
     fontWeight: '700',
-  },
-
-  // ANNOUNCEMENTS
-
-  announcementCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    padding: 12,
-    borderRadius: 15,
-    backgroundColor: COLORS.card,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginBottom: 23,
-  },
-
-  announcementIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  announcementBody: {
-    flex: 1,
-  },
-
-  announcementTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-
-  announcementTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  comingSoonBadge: {
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-
-  comingSoonText: {
-    color: COLORS.textSecondary,
-    fontSize: 8,
-    fontWeight: '800',
-  },
-
-  announcementDescription: {
-    color: COLORS.textSecondary,
-    fontSize: 10,
-    lineHeight: 16,
-    marginTop: 6,
   },
 
   // RECENT ATTENDANCE

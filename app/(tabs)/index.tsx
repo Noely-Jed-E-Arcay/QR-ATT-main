@@ -2,6 +2,8 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -16,6 +18,11 @@ import Header from '@/components/Header';
 import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
 import { getProfile } from '@/lib/profiles';
+import {
+  getAnnouncements,
+  markAnnouncementAsRead,
+  type Announcement,
+} from '@/lib/announcements';
 
 type UserRole = 'student' | 'teacher' | 'admin';
 
@@ -25,52 +32,62 @@ export default function Index() {
 
   const [role, setRole] = useState<UserRole>('student');
   const [loadingRole, setLoadingRole] = useState(true);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [loadingAnnouncements, setLoadingAnnouncements] = useState(true);
+  const [announcementError, setAnnouncementError] = useState('');
+  const [readingId, setReadingId] = useState<string | null>(null);
 
   const isSmallScreen = width < 380;
 
+  const loadDashboard = useCallback(async () => {
+    setLoadingRole(true);
+    setLoadingAnnouncements(true);
+    setAnnouncementError('');
+
+    if (!user) {
+      setRole('student');
+      setAnnouncements([]);
+      setLoadingRole(false);
+      setLoadingAnnouncements(false);
+      return;
+    }
+
+    try {
+      const profile = await getProfile(user.id);
+
+      const profileRole: UserRole =
+        profile?.role === 'admin'
+          ? 'admin'
+          : profile?.role === 'teacher'
+            ? 'teacher'
+            : 'student';
+
+      setRole(profileRole);
+
+      const result = await getAnnouncements(user.id, profileRole);
+
+      setAnnouncements(result.data ?? []);
+
+      if (result.error) {
+        setAnnouncementError(
+          'Unable to load announcements. Please try again.',
+        );
+      }
+    } catch (error) {
+      console.error('Failed to load dashboard:', error);
+      setAnnouncementError(
+        'Unable to load announcements. Check your connection and try again.',
+      );
+    } finally {
+      setLoadingRole(false);
+      setLoadingAnnouncements(false);
+    }
+  }, [user]);
+
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-
-      async function loadRole() {
-        if (!user) {
-          if (active) {
-            setRole('student');
-            setLoadingRole(false);
-          }
-          return;
-        }
-
-        try {
-          const profile = await getProfile(user.id);
-
-          if (active) {
-            const profileRole = profile?.role;
-
-            if (profileRole === 'admin') {
-              setRole('admin');
-            } else if (profileRole === 'teacher') {
-              setRole('teacher');
-            } else {
-              setRole('student');
-            }
-          }
-        } catch (error) {
-          console.error('Failed to load user role:', error);
-        } finally {
-          if (active) {
-            setLoadingRole(false);
-          }
-        }
-      }
-
-      setLoadingRole(true);
-      loadRole();
-
-      return () => {
-        active = false;
-      };
-    }, [user])
+      void loadDashboard();
+    }, [loadDashboard]),
   );
 
   const isAdministrator = role === 'admin';
@@ -88,6 +105,68 @@ export default function Index() {
       ? 'Create events, generate QR codes, and monitor attendance.'
       : 'Stay updated with school activities and keep your attendance organized.';
 
+  const handleAnnouncementPress = async (
+    announcement: Announcement,
+  ) => {
+    if (!user || readingId) return;
+
+    if (announcement.is_read) {
+      Alert.alert(announcement.title, announcement.message);
+      return;
+    }
+
+    setReadingId(announcement.id);
+
+    try {
+      const result = await markAnnouncementAsRead(
+        announcement.id,
+        user.id,
+      );
+
+      if (result.error) {
+        Alert.alert(
+          'Could not mark as read',
+          'The announcement will open, but its read status could not be saved.',
+        );
+      } else {
+        setAnnouncements((current) =>
+          current.map((item) =>
+            item.id === announcement.id
+              ? { ...item, is_read: true }
+              : item,
+          ),
+        );
+      }
+
+      Alert.alert(announcement.title, announcement.message);
+    } catch (error) {
+      console.error('Failed to mark announcement as read:', error);
+      Alert.alert(announcement.title, announcement.message);
+    } finally {
+      setReadingId(null);
+    }
+  };
+
+  const formatAnnouncementDate = (dateString: string | null) => {
+    if (!dateString) return 'Date unavailable';
+
+    const date = new Date(dateString);
+
+    if (Number.isNaN(date.getTime())) {
+      return 'Date unavailable';
+    }
+
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const refreshAnnouncements = () => {
+    void loadDashboard();
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
@@ -98,6 +177,7 @@ export default function Index() {
           <Header title="QR Attendance" />
         </View>
 
+        {/* WELCOME CARD */}
         <View style={styles.welcomeCard}>
           <View style={styles.welcomeTopRow}>
             <View style={styles.welcomeIcon}>
@@ -140,6 +220,7 @@ export default function Index() {
           )}
         </View>
 
+        {/* QUICK ACTION */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Quick Action</Text>
 
@@ -191,6 +272,7 @@ export default function Index() {
           />
         </View>
 
+        {/* ROLE-BASED SHORTCUTS */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
             {isAdministrator
@@ -210,6 +292,17 @@ export default function Index() {
                   description="Manage school activities"
                   onPress={() => router.push('/administrator')}
                 />
+
+                <ShortcutCard
+                  compact={isSmallScreen}
+                  icon="megaphone-outline"
+                  title="Announcements"
+                  description="Create and publish school notices"
+                  onPress={() =>
+                    router.push('/administrator/announcements')
+                  }
+                />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="time-outline"
@@ -217,6 +310,7 @@ export default function Index() {
                   description="Review attendance records"
                   onPress={() => router.push('/history')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="calendar-outline"
@@ -224,6 +318,7 @@ export default function Index() {
                   description="Access event management"
                   onPress={() => router.push('/administrator')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="person-outline"
@@ -241,6 +336,18 @@ export default function Index() {
                   description="Create and manage events"
                   onPress={() => router.push('/teacher')}
                 />
+
+                {/* TEACHER ANNOUNCEMENTS SHORTCUT */}
+                <ShortcutCard
+                  compact={isSmallScreen}
+                  icon="megaphone-outline"
+                  title="Announcements"
+                  description="Create and publish school notices"
+                  onPress={() =>
+                    router.push('/administrator/announcements')
+                  }
+                />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="qr-code-outline"
@@ -248,6 +355,7 @@ export default function Index() {
                   description="Scan an event QR code"
                   onPress={() => router.push('/scan')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="time-outline"
@@ -255,6 +363,7 @@ export default function Index() {
                   description="View attendance records"
                   onPress={() => router.push('/history')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="person-outline"
@@ -272,6 +381,7 @@ export default function Index() {
                   description="Record your attendance"
                   onPress={() => router.push('/scan')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="time-outline"
@@ -279,6 +389,7 @@ export default function Index() {
                   description="Review your attendance"
                   onPress={() => router.push('/history')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="calendar-outline"
@@ -286,6 +397,7 @@ export default function Index() {
                   description="Check event information"
                   onPress={() => router.push('/history')}
                 />
+
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="person-outline"
@@ -298,6 +410,7 @@ export default function Index() {
           </View>
         </View>
 
+        {/* ANNOUNCEMENTS FEED */}
         <View style={styles.section}>
           <View style={styles.announcementHeader}>
             <View style={styles.announcementHeading}>
@@ -309,31 +422,149 @@ export default function Index() {
               <Text style={styles.sectionTitle}>Announcements</Text>
             </View>
 
-            <View style={styles.comingSoonBadge}>
-              <Text style={styles.comingSoonText}>COMING SOON</Text>
-            </View>
+            {!loadingAnnouncements && announcements.length > 0 && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>
+                  {announcements.filter((item) => !item.is_read).length}{' '}
+                  unread
+                </Text>
+              </View>
+            )}
           </View>
 
-          <View style={styles.announcementCard}>
-            <View style={styles.announcementIcon}>
-              <Ionicons
-                name="notifications-outline"
-                size={22}
+          {loadingAnnouncements ? (
+            <View style={styles.announcementStateCard}>
+              <ActivityIndicator
+                size="small"
                 color={COLORS.primary}
               />
-            </View>
-
-            <View style={styles.announcementContent}>
-              <Text style={styles.announcementTitle}>Stay in the Loop</Text>
-              <Text style={styles.announcementDescription}>
-                {isAdministrator
-                  ? 'School announcements will be managed here in a future update.'
-                  : 'School notices, event reminders, and important updates will appear here.'}
+              <Text style={styles.stateText}>
+                Loading announcements...
               </Text>
             </View>
-          </View>
+          ) : announcementError ? (
+            <View style={styles.announcementStateCard}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={25}
+                color={COLORS.danger}
+              />
+
+              <Text style={styles.stateText}>
+                {announcementError}
+              </Text>
+
+              <Pressable
+                style={styles.retryButton}
+                onPress={refreshAnnouncements}
+              >
+                <Text style={styles.retryButtonText}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : announcements.length === 0 ? (
+            <View style={styles.announcementStateCard}>
+              <View style={styles.emptyAnnouncementIcon}>
+                <Ionicons
+                  name="notifications-off-outline"
+                  size={25}
+                  color={COLORS.primary}
+                />
+              </View>
+
+              <Text style={styles.emptyAnnouncementTitle}>
+                No announcements yet
+              </Text>
+
+              <Text style={styles.stateText}>
+                School notices, event reminders, and important updates
+                will appear here when published by the administrator or
+                authorized teacher.
+              </Text>
+            </View>
+          ) : (
+            announcements.map((announcement) => (
+              <Pressable
+                key={announcement.id}
+                style={({ pressed }) => [
+                  styles.announcementCard,
+                  !announcement.is_read &&
+                    styles.unreadAnnouncementCard,
+                  pressed && styles.announcementPressed,
+                ]}
+                onPress={() =>
+                  void handleAnnouncementPress(announcement)
+                }
+                disabled={readingId !== null}
+              >
+                <View style={styles.announcementIcon}>
+                  <Ionicons
+                    name={
+                      announcement.is_read
+                        ? 'notifications-outline'
+                        : 'notifications'
+                    }
+                    size={22}
+                    color={COLORS.primary}
+                  />
+                </View>
+
+                <View style={styles.announcementContent}>
+                  <View style={styles.announcementTitleRow}>
+                    <Text style={styles.announcementTitle}>
+                      {announcement.title}
+                    </Text>
+
+                    {!announcement.is_read && (
+                      <View style={styles.unreadDot} />
+                    )}
+                  </View>
+
+                  <Text
+                    style={styles.announcementDescription}
+                    numberOfLines={3}
+                  >
+                    {announcement.message}
+                  </Text>
+
+                  <View style={styles.announcementMeta}>
+                    <Ionicons
+                      name="calendar-outline"
+                      size={12}
+                      color={COLORS.textSecondary}
+                    />
+
+                    <Text style={styles.announcementDate}>
+                      {formatAnnouncementDate(
+                        announcement.published_at,
+                      )}
+                    </Text>
+
+                    <Text style={styles.metaSeparator}>•</Text>
+
+                    <Text style={styles.announcementReadStatus}>
+                      {announcement.is_read ? 'Read' : 'Unread'}
+                    </Text>
+                  </View>
+                </View>
+
+                {readingId === announcement.id ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={COLORS.primary}
+                  />
+                ) : (
+                  <Ionicons
+                    name="chevron-forward"
+                    size={18}
+                    color={COLORS.textSecondary}
+                  />
+                )}
+              </Pressable>
+            ))
+          )}
         </View>
 
+        {/* FOOTER */}
         <View style={styles.footer}>
           <Ionicons
             name="heart-outline"
@@ -363,10 +594,14 @@ function ShortcutCard({
   compact,
 }: ShortcutCardProps) {
   return (
-    <View
-      style={[
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${description}`}
+      onPress={onPress}
+      style={({ pressed }) => [
         styles.shortcutCard,
         compact && styles.shortcutCardCompact,
+        pressed && styles.shortcutPressed,
       ]}
     >
       <View style={styles.shortcutIcon}>
@@ -389,15 +624,7 @@ function ShortcutCard({
           color={COLORS.primary}
         />
       </View>
-
-      <View style={styles.shortcutButtonContainer}>
-        <AppButton
-          title={title}
-          icon={icon}
-          onPress={onPress}
-        />
-      </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -553,6 +780,10 @@ const styles = StyleSheet.create({
     padding: 10,
   },
 
+  shortcutPressed: {
+    opacity: 0.75,
+  },
+
   shortcutIcon: {
     width: 36,
     height: 36,
@@ -590,10 +821,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  shortcutButtonContainer: {
-    marginTop: 8,
-  },
-
   announcementHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -609,18 +836,17 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  comingSoonBadge: {
+  countBadge: {
     backgroundColor: COLORS.surface,
-    paddingHorizontal: 8,
+    paddingHorizontal: 9,
     paddingVertical: 5,
     borderRadius: 20,
   },
 
-  comingSoonText: {
+  countBadgeText: {
     color: COLORS.textSecondary,
-    fontSize: 8,
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.4,
   },
 
   announcementCard: {
@@ -632,6 +858,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.surface,
     gap: 10,
+    marginBottom: 9,
+  },
+
+  unreadAnnouncementCard: {
+    borderColor: COLORS.primary,
+  },
+
+  announcementPressed: {
+    opacity: 0.75,
   },
 
   announcementIcon: {
@@ -647,17 +882,103 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  announcementTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 4,
+  },
+
   announcementTitle: {
     color: COLORS.textPrimary,
     fontSize: 13,
     fontWeight: '800',
-    marginBottom: 4,
+    flex: 1,
+  },
+
+  unreadDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
   },
 
   announcementDescription: {
     color: COLORS.textSecondary,
     fontSize: 11,
     lineHeight: 17,
+  },
+
+  announcementMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 9,
+  },
+
+  announcementDate: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+  },
+
+  metaSeparator: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+  },
+
+  announcementReadStatus: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  announcementStateCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 15,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.surface,
+    gap: 9,
+  },
+
+  emptyAnnouncementIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  emptyAnnouncementTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+
+  stateText: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: 'center',
+  },
+
+  retryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: COLORS.surface,
+    marginTop: 4,
+  },
+
+  retryButtonText: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   footer: {
