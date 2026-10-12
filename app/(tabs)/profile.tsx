@@ -1,3 +1,4 @@
+
 import { useState, useCallback } from 'react';
 import {
   StyleSheet,
@@ -7,8 +8,10 @@ import {
   TextInput,
   Pressable,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import AppButton from '@/components/AppButton';
 import { COLORS } from '@/constants/colors';
@@ -27,12 +30,10 @@ import {
 
 export default function ProfileScreen() {
   const { user } = useAuth();
-
   const router = useRouter();
 
   const [loading, setLoading] = useState(false);
   const [fetchingProfile, setFetchingProfile] = useState(true);
-
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [draftName, setDraftName] = useState('');
@@ -42,20 +43,11 @@ export default function ProfileScreen() {
   // Teacher verification
   const [teacherRequest, setTeacherRequest] =
     useState<TeacherRequest | null>(null);
+  const [schoolStaffId, setSchoolStaffId] = useState('');
+  const [requestReason, setRequestReason] = useState('');
+  const [requestLoading, setRequestLoading] = useState(false);
 
-  const [schoolStaffId, setSchoolStaffId] =
-    useState('');
-
-  const [requestReason, setRequestReason] =
-    useState('');
-
-  const [requestLoading, setRequestLoading] =
-    useState(false);
-
-  // ============================================================
   // SIGN OUT
-  // ============================================================
-
   const handleSignOut = async () => {
     setLoading(true);
 
@@ -72,10 +64,7 @@ export default function ProfileScreen() {
     }
   };
 
-  // ============================================================
   // LOAD PROFILE
-  // ============================================================
-
   const loadProfile = useCallback(async () => {
     if (!user) {
       setFetchingProfile(false);
@@ -90,13 +79,8 @@ export default function ProfileScreen() {
       setProfile(p);
       setDraftName(p?.full_name ?? '');
 
-      // --------------------------------------------------------
-      // Only students need Teacher Verification information.
-      // --------------------------------------------------------
-
       if (p?.role === 'student') {
         const request = await getMyTeacherRequest(user.id);
-
         setTeacherRequest(request);
       } else {
         setTeacherRequest(null);
@@ -117,10 +101,7 @@ export default function ProfileScreen() {
     }, [loadProfile])
   );
 
-  // ============================================================
   // SAVE NAME
-  // ============================================================
-
   const handleSaveName = async () => {
     if (!user) return;
 
@@ -136,49 +117,44 @@ export default function ProfileScreen() {
 
     setSaving(true);
 
-    const { error } = await updateProfile(user.id, {
-      full_name: newName,
-    });
+    try {
+      const { error } = await updateProfile(user.id, {
+        full_name: newName,
+      });
 
-    setSaving(false);
+      if (error) {
+        Alert.alert('Error', error);
+        return;
+      }
 
-    if (error) {
-      Alert.alert('Error', error);
-    } else {
       setProfile((prev) =>
         prev
-          ? {
-              ...prev,
-              full_name: newName,
-            }
+          ? { ...prev, full_name: newName }
           : prev
       );
 
       setEditing(false);
 
+      Alert.alert('Saved', 'Your name has been updated.');
+    } catch (error: any) {
       Alert.alert(
-        'Saved',
-        'Your name has been updated.'
+        'Error',
+        error?.message || 'Failed to update your name.'
       );
+    } finally {
+      setSaving(false);
     }
   };
 
-  // ============================================================
   // REQUEST TEACHER VERIFICATION
-  // ============================================================
-
   const handleTeacherRequest = async () => {
     if (!user) return;
 
     if (!profile) {
-      Alert.alert(
-        'Error',
-        'Your profile could not be loaded.'
-      );
+      Alert.alert('Error', 'Your profile could not be loaded.');
       return;
     }
 
-    // Only students can request Teacher verification.
     if (profile.role !== 'student') {
       Alert.alert(
         'Not Available',
@@ -209,26 +185,19 @@ export default function ProfileScreen() {
     setRequestLoading(true);
 
     try {
-      const { data, error } =
-        await createTeacherRequest(
-          user.id,
-          profile.full_name ||
-            user.email ||
-            'Unnamed User',
-          staffId,
-          reason
-        );
+      const { data, error } = await createTeacherRequest(
+        user.id,
+        profile.full_name || user.email || 'Unnamed User',
+        staffId,
+        reason
+      );
 
       if (error) {
-        Alert.alert(
-          'Request Failed',
-          error
-        );
+        Alert.alert('Request Failed', error);
         return;
       }
 
       setTeacherRequest(data);
-
       setSchoolStaffId('');
       setRequestReason('');
 
@@ -247,23 +216,28 @@ export default function ProfileScreen() {
     }
   };
 
-  // ============================================================
   // LOADING SCREEN
-  // ============================================================
-
   if (fetchingProfile) {
     return (
       <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>
-          Loading profile...
-        </Text>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.loadingText}>Loading profile...</Text>
       </View>
     );
   }
 
-  // ============================================================
-  // MAIN SCREEN
-  // ============================================================
+  const roleLabel =
+    profile?.role === 'admin'
+      ? 'Administrator'
+      : profile?.role === 'teacher'
+        ? 'Teacher'
+        : 'Student';
+
+  const initial = (
+    profile?.full_name?.trim()?.charAt(0) ||
+    user?.email?.charAt(0) ||
+    'U'
+  ).toUpperCase();
 
   return (
     <ScrollView
@@ -271,260 +245,417 @@ export default function ProfileScreen() {
       contentContainerStyle={styles.contentContainer}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.title}>My Profile</Text>
+      {/* PROFILE HEADER */}
+      <View style={styles.profileHeader}>
+        <View style={styles.headerTopRow}>
+          <View>
+            <Text style={styles.eyebrow}>YOUR ACCOUNT</Text>
+            <Text style={styles.pageTitle}>My Profile</Text>
+          </View>
 
-      {/* ======================================================
-          ROLE BADGE
-          ====================================================== */}
-
-      <View
-        style={[
-          styles.roleBadge,
-          profile?.role === 'student' &&
-            styles.roleBadgeStudent,
-          profile?.role === 'teacher' &&
-            styles.roleBadgeTeacher,
-          profile?.role === 'admin' &&
-            styles.roleBadgeAdmin,
-        ]}
-      >
-        <Text
-          style={[
-            styles.roleBadgeText,
-            profile?.role === 'student' &&
-              styles.roleBadgeTextStudent,
-            profile?.role === 'teacher' &&
-              styles.roleBadgeTextTeacher,
-            profile?.role === 'admin' &&
-              styles.roleBadgeTextAdmin,
-          ]}
-        >
-          {profile?.role === 'admin'
-            ? 'Administrator'
-            : profile?.role === 'teacher'
-              ? 'Teacher'
-              : 'Student'}
-        </Text>
-      </View>
-
-      {/* ======================================================
-          ACCOUNT INFORMATION
-          ====================================================== */}
-
-      {user && (
-        <View style={styles.infoCard}>
-          <Text style={styles.label}>Email</Text>
-
-          <Text style={styles.value}>
-            {user.email}
-          </Text>
-
-          <Text style={styles.label}>User ID</Text>
-
-          <Text style={styles.valueSmall}>
-            {user.id}
-          </Text>
+          <View style={styles.headerDecoration}>
+            <Ionicons
+              name="person-outline"
+              size={22}
+              color={COLORS.primary}
+            />
+          </View>
         </View>
-      )}
 
-      {/* ======================================================
-          NAME
-          ====================================================== */}
+        <View style={styles.identityContainer}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{initial}</Text>
+            <View style={styles.avatarCheck}>
+              <Ionicons
+                name="checkmark"
+                size={12}
+                color="#FFFFFF"
+              />
+            </View>
+          </View>
 
-      {editing ? (
-        <View style={styles.nameEditRow}>
-          <TextInput
-            value={draftName}
-            onChangeText={setDraftName}
-            placeholder="Enter your full name"
-            placeholderTextColor={COLORS.textSecondary}
-            style={styles.nameInput}
-            autoCapitalize="words"
-          />
-
-          <Pressable
-            onPress={handleSaveName}
-            style={[
-              styles.saveButton,
-              saving && styles.disabledButton,
-            ]}
-            disabled={saving}
-          >
-            <Text style={styles.saveButtonText}>
-              {saving ? 'Saving...' : 'Save'}
+          <View style={styles.identityText}>
+            <Text style={styles.profileName} numberOfLines={2}>
+              {profile?.full_name || 'Welcome!'}
             </Text>
-          </Pressable>
-        </View>
-      ) : (
-        <Pressable
-          onPress={() => setEditing(true)}
-          style={styles.nameRow}
-        >
-          <Text style={styles.value}>
-            {profile?.full_name ||
-              'Tap to add your name'}
-          </Text>
 
-          <Text style={styles.editHint}>
-            Edit
-          </Text>
-        </Pressable>
-      )}
+            <Text style={styles.profileEmail} numberOfLines={2}>
+              {user?.email || 'No email available'}
+            </Text>
 
-      {/* ======================================================
-          TEACHER VERIFICATION
-          ONLY SHOWS FOR STUDENTS
-          ====================================================== */}
-
-      {profile?.role === 'student' && (
-        <View style={styles.teacherVerificationCard}>
-          <Text style={styles.teacherVerificationTitle}>
-            Teacher Verification
-          </Text>
-
-          <Text style={styles.teacherVerificationDescription}>
-            If you are a teacher, you can submit a
-            verification request. An administrator will
-            review your request before your account can
-            become a Teacher account.
-          </Text>
-
-          {/* --------------------------------------------------
-              EXISTING REQUEST
-              -------------------------------------------------- */}
-
-          {teacherRequest ? (
-            <View style={styles.requestStatusBox}>
-              <Text style={styles.requestStatusLabel}>
-                Request Status
-              </Text>
+            <View
+              style={[
+                styles.roleBadge,
+                profile?.role === 'teacher' && styles.teacherBadge,
+                profile?.role === 'admin' && styles.adminBadge,
+              ]}
+            >
+              <Ionicons
+                name={
+                  profile?.role === 'admin'
+                    ? 'shield-checkmark-outline'
+                    : profile?.role === 'teacher'
+                      ? 'school-outline'
+                      : 'person-outline'
+                }
+                size={13}
+                color={
+                  profile?.role === 'admin'
+                    ? '#FFFFFF'
+                    : profile?.role === 'teacher'
+                      ? '#FFFFFF'
+                      : COLORS.primary
+                }
+              />
 
               <Text
                 style={[
-                  styles.requestStatus,
-                  teacherRequest.status ===
-                    'pending' &&
-                    styles.statusPending,
-                  teacherRequest.status ===
-                    'approved' &&
-                    styles.statusApproved,
-                  teacherRequest.status ===
-                    'rejected' &&
-                    styles.statusRejected,
+                  styles.roleBadgeText,
+                  profile?.role !== 'student' &&
+                    styles.specialRoleText,
                 ]}
               >
-                {teacherRequest.status.toUpperCase()}
+                {roleLabel}
               </Text>
-
-              {teacherRequest.status ===
-                'pending' && (
-                <Text style={styles.requestMessage}>
-                  Your request is currently waiting for
-                  an administrator to review it.
-                </Text>
-              )}
-
-              {teacherRequest.status ===
-                'approved' && (
-                <Text style={styles.requestMessage}>
-                  Your request has been approved. Your
-                  account is now eligible for Teacher
-                  access. Please refresh your profile.
-                </Text>
-              )}
-
-              {teacherRequest.status ===
-                'rejected' && (
-                <Text style={styles.requestMessage}>
-                  Your previous Teacher Verification
-                  request was rejected.
-                </Text>
-              )}
             </View>
-          ) : (
-            <>
-              {/* ------------------------------------------------
-                  STAFF ID
-                  ------------------------------------------------ */}
+          </View>
+        </View>
 
-              <Text style={styles.inputLabel}>
-                School Staff ID
-              </Text>
+        <View style={styles.headerBottomLine} />
+        <Text style={styles.headerFooter}>
+          Manage your account and personal information.
+        </Text>
+      </View>
 
-              <TextInput
-                value={schoolStaffId}
-                onChangeText={setSchoolStaffId}
-                placeholder="Enter your School Staff ID"
-                placeholderTextColor={
-                  COLORS.textSecondary
-                }
-                style={styles.teacherInput}
-                autoCapitalize="characters"
+      {/* PERSONAL INFORMATION */}
+      <View style={styles.sectionHeading}>
+        <View style={styles.sectionIcon}>
+          <Ionicons
+            name="person-circle-outline"
+            size={20}
+            color={COLORS.primary}
+          />
+        </View>
+        <View>
+          <Text style={styles.sectionTitle}>Personal Information</Text>
+          <Text style={styles.sectionSubtitle}>
+            Your account details
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.infoCard}>
+        {/* NAME */}
+        <View style={styles.fieldHeading}>
+          <Text style={styles.fieldLabel}>FULL NAME</Text>
+
+          {!editing && (
+            <Pressable
+              onPress={() => setEditing(true)}
+              style={styles.editAction}
+            >
+              <Ionicons
+                name="create-outline"
+                size={15}
+                color={COLORS.primary}
               />
-
-              {/* ------------------------------------------------
-                  REASON
-                  ------------------------------------------------ */}
-
-              <Text style={styles.inputLabel}>
-                Reason
-              </Text>
-
-              <TextInput
-                value={requestReason}
-                onChangeText={setRequestReason}
-                placeholder="Why are you requesting Teacher access?"
-                placeholderTextColor={
-                  COLORS.textSecondary
-                }
-                style={[
-                  styles.teacherInput,
-                  styles.reasonInput,
-                ]}
-                multiline
-                textAlignVertical="top"
-              />
-
-              {/* ------------------------------------------------
-                  SUBMIT
-                  ------------------------------------------------ */}
-
-              <Pressable
-                onPress={handleTeacherRequest}
-                disabled={requestLoading}
-                style={[
-                  styles.teacherRequestButton,
-                  requestLoading &&
-                    styles.disabledButton,
-                ]}
-              >
-                <Text
-                  style={
-                    styles.teacherRequestButtonText
-                  }
-                >
-                  {requestLoading
-                    ? 'Submitting...'
-                    : 'Request Teacher Verification'}
-                </Text>
-              </Pressable>
-            </>
+              <Text style={styles.editActionText}>Edit</Text>
+            </Pressable>
           )}
         </View>
+
+        {editing ? (
+          <View style={styles.editForm}>
+            <TextInput
+              value={draftName}
+              onChangeText={setDraftName}
+              placeholder="Enter your full name"
+              placeholderTextColor={COLORS.textSecondary}
+              style={styles.nameInput}
+              autoCapitalize="words"
+              returnKeyType="done"
+            />
+
+            <View style={styles.editButtons}>
+              <Pressable
+                onPress={() => {
+                  setDraftName(profile?.full_name ?? '');
+                  setEditing(false);
+                }}
+                style={styles.cancelButton}
+                disabled={saving}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleSaveName}
+                style={[
+                  styles.saveButton,
+                  saving && styles.disabledButton,
+                ]}
+                disabled={saving}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Ionicons
+                    name="checkmark"
+                    size={17}
+                    color="#FFFFFF"
+                  />
+                )}
+                <Text style={styles.saveButtonText}>
+                  {saving ? 'Saving...' : 'Save'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.fieldValue}>
+            {profile?.full_name || 'No name added yet'}
+          </Text>
+        )}
+
+        <View style={styles.fieldDivider} />
+
+        {/* EMAIL */}
+        <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
+        <View style={styles.detailRow}>
+          <View style={styles.detailIcon}>
+            <Ionicons
+              name="mail-outline"
+              size={19}
+              color={COLORS.primary}
+            />
+          </View>
+          <Text style={styles.detailValue}>
+            {user?.email || 'No email available'}
+          </Text>
+        </View>
+
+        <View style={styles.fieldDivider} />
+
+        {/* USER ID */}
+        <Text style={styles.fieldLabel}>ACCOUNT ID</Text>
+        <View style={styles.detailRow}>
+          <View style={styles.detailIcon}>
+            <Ionicons
+              name="finger-print-outline"
+              size={19}
+              color={COLORS.primary}
+            />
+          </View>
+          <Text style={styles.userIdValue} selectable>
+            {user?.id || 'Unavailable'}
+          </Text>
+        </View>
+      </View>
+
+      {/* TEACHER VERIFICATION */}
+      {profile?.role === 'student' && (
+        <>
+          <View style={styles.sectionHeading}>
+            <View style={styles.sectionIcon}>
+              <Ionicons
+                name="school-outline"
+                size={20}
+                color={COLORS.primary}
+              />
+            </View>
+
+            <View>
+              <Text style={styles.sectionTitle}>
+                Teacher Verification
+              </Text>
+              <Text style={styles.sectionSubtitle}>
+                Request teacher account access
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.teacherCard}>
+            <View style={styles.teacherIntro}>
+              <View style={styles.teacherIllustration}>
+                <Ionicons
+                  name="id-card-outline"
+                  size={27}
+                  color={COLORS.primary}
+                />
+              </View>
+
+              <View style={styles.teacherIntroText}>
+                <Text style={styles.teacherCardTitle}>
+                  Are you a teacher?
+                </Text>
+                <Text style={styles.teacherDescription}>
+                  Submit your school staff details for administrator
+                  verification.
+                </Text>
+              </View>
+            </View>
+
+            {teacherRequest ? (
+              <View style={styles.requestStatusBox}>
+                <View style={styles.statusHeader}>
+                  <Text style={styles.fieldLabel}>REQUEST STATUS</Text>
+
+                  <View
+                    style={[
+                      styles.statusPill,
+                      teacherRequest.status === 'pending' &&
+                        styles.pendingPill,
+                      teacherRequest.status === 'approved' &&
+                        styles.approvedPill,
+                      teacherRequest.status === 'rejected' &&
+                        styles.rejectedPill,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.statusDot,
+                        teacherRequest.status === 'pending' &&
+                          styles.pendingDot,
+                        teacherRequest.status === 'approved' &&
+                          styles.approvedDot,
+                        teacherRequest.status === 'rejected' &&
+                          styles.rejectedDot,
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.statusText,
+                        teacherRequest.status === 'pending' &&
+                          styles.pendingText,
+                        teacherRequest.status === 'approved' &&
+                          styles.approvedText,
+                        teacherRequest.status === 'rejected' &&
+                          styles.rejectedText,
+                      ]}
+                    >
+                      {teacherRequest.status.toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.requestMessage}>
+                  {teacherRequest.status === 'pending'
+                    ? 'Your request is waiting for an administrator to review it.'
+                    : teacherRequest.status === 'approved'
+                      ? 'Your request has been approved. Your account is eligible for Teacher access. Refresh your profile to see any updated role.'
+                      : 'Your previous Teacher Verification request was rejected.'}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.inputLabel}>School Staff ID</Text>
+                <View style={styles.inputWrapper}>
+                  <Ionicons
+                    name="id-card-outline"
+                    size={19}
+                    color={COLORS.textSecondary}
+                  />
+                  <TextInput
+                    value={schoolStaffId}
+                    onChangeText={setSchoolStaffId}
+                    placeholder="Enter your School Staff ID"
+                    placeholderTextColor={COLORS.textSecondary}
+                    style={styles.teacherInput}
+                    autoCapitalize="characters"
+                  />
+                </View>
+
+                <Text style={styles.inputLabel}>Reason for Request</Text>
+                <View style={[styles.inputWrapper, styles.reasonWrapper]}>
+                  <Ionicons
+                    name="document-text-outline"
+                    size={19}
+                    color={COLORS.textSecondary}
+                    style={styles.reasonIcon}
+                  />
+                  <TextInput
+                    value={requestReason}
+                    onChangeText={setRequestReason}
+                    placeholder="Explain why you need Teacher access..."
+                    placeholderTextColor={COLORS.textSecondary}
+                    style={[styles.teacherInput, styles.reasonInput]}
+                    multiline
+                    textAlignVertical="top"
+                  />
+                </View>
+
+                <Pressable
+                  onPress={handleTeacherRequest}
+                  disabled={requestLoading}
+                  style={[
+                    styles.teacherRequestButton,
+                    requestLoading && styles.disabledButton,
+                  ]}
+                >
+                  {requestLoading ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Ionicons
+                      name="paper-plane-outline"
+                      size={18}
+                      color="#FFFFFF"
+                    />
+                  )}
+                  <Text style={styles.teacherRequestButtonText}>
+                    {requestLoading
+                      ? 'Submitting Request...'
+                      : 'Submit Verification Request'}
+                  </Text>
+                </Pressable>
+
+                <View style={styles.privacyNote}>
+                  <Ionicons
+                    name="shield-checkmark-outline"
+                    size={16}
+                    color={COLORS.success}
+                  />
+                  <Text style={styles.privacyText}>
+                    Your request will be reviewed by an administrator.
+                  </Text>
+                </View>
+              </>
+            )}
+          </View>
+        </>
       )}
 
-      {/* ======================================================
-          SIGN OUT
-          ====================================================== */}
+      {/* SIGN OUT */}
+      <View style={styles.signOutCard}>
+        <View style={styles.signOutInfo}>
+          <View style={styles.signOutIcon}>
+            <Ionicons
+              name="log-out-outline"
+              size={22}
+              color={COLORS.danger}
+            />
+          </View>
 
-      <View style={styles.signOutContainer}>
-        <AppButton
-          title="Sign Out"
-          icon="log-out-outline"
-          onPress={handleSignOut}
-          disabled={loading}
-        />
+          <View style={styles.signOutTextContainer}>
+            <Text style={styles.signOutTitle}>Sign Out</Text>
+            <Text style={styles.signOutSubtitle}>
+              Sign out of your account on this device.
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.signOutButton}>
+          <AppButton
+            title={loading ? 'Signing Out...' : 'Sign Out'}
+            icon="log-out-outline"
+            onPress={handleSignOut}
+            disabled={loading}
+          />
+        </View>
       </View>
+
+      <Text style={styles.footerText}>
+        School Event Attendance
+      </Text>
     </ScrollView>
   );
 }
@@ -536,276 +667,581 @@ const styles = StyleSheet.create({
   },
 
   contentContainer: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 40,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 36,
   },
 
   loadingContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+
+  // PROFILE HEADER
+  profileHeader: {
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 28,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+  },
+
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 24,
+  },
+
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.primary,
+    letterSpacing: 2,
+    marginBottom: 5,
+  },
+
+  pageTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+
+  headerDecoration: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  loadingText: {
-    fontSize: 15,
-    color: COLORS.textSecondary,
+  identityContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
 
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.textPrimary,
-    marginBottom: 16,
-  },
-
-  /* ============================================================
-     ROLE BADGE
-     ============================================================ */
-
-  roleBadge: {
-    backgroundColor: COLORS.card,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    alignSelf: 'flex-start',
-    marginBottom: 16,
-  },
-
-  roleBadgeText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.textPrimary,
-  },
-
-  roleBadgeStudent: {
+  avatar: {
+    width: 82,
+    height: 82,
+    borderRadius: 28,
     backgroundColor: COLORS.surface,
+    borderWidth: 2,
     borderColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
-  roleBadgeTextStudent: {
+  avatarText: {
+    fontSize: 34,
+    fontWeight: '800',
     color: COLORS.primary,
   },
 
-  roleBadgeTeacher: {
+  avatarCheck: {
+    position: 'absolute',
+    bottom: -3,
+    right: -3,
+    width: 25,
+    height: 25,
+    borderRadius: 13,
+    backgroundColor: COLORS.success,
+    borderWidth: 2,
+    borderColor: COLORS.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  identityText: {
+    flex: 1,
+    marginLeft: 16,
+  },
+
+  profileName: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginBottom: 5,
+  },
+
+  profileEmail: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginBottom: 10,
+  },
+
+  roleBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+
+  roleBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.primary,
+  },
+
+  teacherBadge: {
     backgroundColor: COLORS.primary,
-    borderColor: COLORS.shadow,
   },
 
-  roleBadgeTextTeacher: {
-    color: COLORS.textOnPrimary,
-  },
-
-  roleBadgeAdmin: {
+  adminBadge: {
     backgroundColor: '#4b14aa',
-    borderColor: '#b303f8',
   },
 
-  roleBadgeTextAdmin: {
-    color: '#fff',
+  specialRoleText: {
+    color: '#FFFFFF',
   },
 
-  /* ============================================================
-     ACCOUNT INFORMATION
-     ============================================================ */
+  headerBottomLine: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginTop: 22,
+    marginBottom: 12,
+  },
 
+  headerFooter: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    lineHeight: 18,
+  },
+
+  // SECTION HEADINGS
+  sectionHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 13,
+  },
+
+  sectionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+
+  sectionSubtitle: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 3,
+  },
+
+  // PERSONAL INFORMATION
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 24,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 28,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
 
-  label: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
-    marginBottom: 4,
-    marginTop: 8,
-  },
-
-  value: {
-    fontSize: 15,
-    color: COLORS.textPrimary,
-    fontWeight: '500',
-  },
-
-  valueSmall: {
-    fontSize: 11,
-    color: COLORS.textSecondary,
-  },
-
-  /* ============================================================
-     NAME
-     ============================================================ */
-
-  nameRow: {
+  fieldHeading: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: COLORS.card,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 24,
-  },
-
-  nameEditRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.card,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginBottom: 24,
-  },
-
-  nameInput: {
-    flex: 1,
-    fontSize: 15,
-    color: COLORS.textPrimary,
-  },
-
-  saveButton: {
-    marginLeft: 12,
-    backgroundColor: COLORS.primary,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 14,
-  },
-
-  saveButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-
-  editHint: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-  },
-
-  /* ============================================================
-     TEACHER VERIFICATION
-     ============================================================ */
-
-  teacherVerificationCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 14,
-    padding: 18,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-
-  teacherVerificationTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.textPrimary,
     marginBottom: 8,
   },
 
-  teacherVerificationDescription: {
-    fontSize: 14,
-    lineHeight: 20,
+  fieldLabel: {
+    fontSize: 10,
+    fontWeight: '800',
     color: COLORS.textSecondary,
-    marginBottom: 18,
+    letterSpacing: 1.1,
+  },
+
+  fieldValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginTop: 2,
+  },
+
+  editAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: 9,
+    backgroundColor: COLORS.surface,
+  },
+
+  editActionText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  editForm: {
+    marginTop: 2,
+  },
+
+  nameInput: {
+    minHeight: 46,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 12,
+    color: COLORS.textPrimary,
+    fontSize: 14,
+  },
+
+  editButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 10,
+    gap: 8,
+  },
+
+  cancelButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+  },
+
+  cancelButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+
+  saveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary,
+  },
+
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  fieldDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: 18,
+  },
+
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+
+  detailIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 11,
+  },
+
+  detailValue: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.textPrimary,
+  },
+
+  userIdValue: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 17,
+    color: COLORS.textSecondary,
+  },
+
+  // TEACHER VERIFICATION
+  teacherCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 28,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+
+  teacherIntro: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+
+  teacherIllustration: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  teacherIntroText: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  teacherCardTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginBottom: 5,
+  },
+
+  teacherDescription: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.textSecondary,
   },
 
   inputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '800',
     color: COLORS.textSecondary,
-    marginBottom: 6,
-    marginTop: 8,
+    marginBottom: 8,
+    marginTop: 12,
+    letterSpacing: 0.5,
+  },
+
+  inputWrapper: {
+    minHeight: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 12,
   },
 
   teacherInput: {
+    flex: 1,
     minHeight: 48,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 10,
     color: COLORS.textPrimary,
-    backgroundColor: COLORS.background,
-    fontSize: 14,
+    fontSize: 13,
+  },
+
+  reasonWrapper: {
+    alignItems: 'flex-start',
+    paddingTop: 12,
+  },
+
+  reasonIcon: {
+    marginTop: 8,
   },
 
   reasonInput: {
-    minHeight: 100,
-    marginBottom: 16,
+    minHeight: 95,
+    paddingTop: 6,
   },
 
   teacherRequestButton: {
     minHeight: 50,
-    borderRadius: 10,
-    backgroundColor: COLORS.primary,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    gap: 9,
+    backgroundColor: COLORS.primary,
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 18,
   },
 
   teacherRequestButtonText: {
-    color: COLORS.textOnPrimary,
-    fontSize: 14,
-    fontWeight: '700',
+    flex: 1,
     textAlign: 'center',
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
   },
 
-  /* ============================================================
-     REQUEST STATUS
-     ============================================================ */
+  privacyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginTop: 14,
+  },
 
+  privacyText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textSecondary,
+  },
+
+  // REQUEST STATUS
   requestStatusBox: {
     backgroundColor: COLORS.background,
-    borderRadius: 10,
-    padding: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
+    borderRadius: 14,
+    padding: 14,
   },
 
-  requestStatusLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.textSecondary,
-    marginBottom: 5,
+  statusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 10,
   },
 
-  requestStatus: {
-    fontSize: 16,
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+
+  pendingPill: {
+    backgroundColor: '#FFF1D6',
+  },
+
+  approvedPill: {
+    backgroundColor: '#E4F3E7',
+  },
+
+  rejectedPill: {
+    backgroundColor: '#FBE9E7',
+  },
+
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+
+  pendingDot: {
+    backgroundColor: '#B7791F',
+  },
+
+  approvedDot: {
+    backgroundColor: '#2E7D32',
+  },
+
+  rejectedDot: {
+    backgroundColor: '#C62828',
+  },
+
+  statusText: {
+    fontSize: 10,
     fontWeight: '800',
-    marginBottom: 8,
+    letterSpacing: 0.5,
   },
 
-  statusPending: {
-    color: COLORS.warning,
+  pendingText: {
+    color: '#8A5A12',
   },
 
-  statusApproved: {
-    color: COLORS.success,
+  approvedText: {
+    color: '#2E7D32',
   },
 
-  statusRejected: {
-    color: COLORS.danger,
+  rejectedText: {
+    color: '#C62828',
   },
 
   requestMessage: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 19,
     color: COLORS.textSecondary,
+    marginTop: 12,
   },
 
-  /* ============================================================
-     GENERAL
-     ============================================================ */
+  // SIGN OUT
+  signOutCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+    marginTop: 2,
+  },
+
+  signOutInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  signOutIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FBE9E7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  signOutTextContainer: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  signOutTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+
+  signOutSubtitle: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+  },
+
+  signOutButton: {
+    marginTop: 15,
+  },
 
   disabledButton: {
     opacity: 0.6,
   },
 
-  signOutContainer: {
-    marginTop: 4,
+  footerText: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginTop: 22,
   },
 });

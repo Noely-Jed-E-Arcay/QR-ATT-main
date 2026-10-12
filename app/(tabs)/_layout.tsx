@@ -1,101 +1,113 @@
+
 import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { COLORS } from '@/constants/colors';
 
 export default function TabLayout() {
   return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: COLORS.primary,
-        tabBarShowLabel: false,
-
-        // Smaller top header
-        headerTitle: '',
-        headerTransparent: false,
-        headerShadowVisible: false,
-        headerTintColor: COLORS.textPrimary,
-        headerStyle: {
-          backgroundColor: COLORS.background,
-          height: 48,
-        },
-
-        // Bottom tab bar
-        tabBarStyle: {
-          backgroundColor: COLORS.card,
-          borderTopColor: COLORS.border,
-        },
-      }}
+    <SafeAreaView
+      style={{ flex: 1, backgroundColor: COLORS.background }}
+      edges={['top']}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'home-sharp' : 'home-outline'}
-              color={color}
-              size={24}
-            />
-          ),
-        }}
-      />
+      <Tabs
+        screenOptions={{
+          headerShown: false,
 
-      <Tabs.Screen
-        name="scan"
-        options={{
-          title: 'Scan',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'qr-code' : 'qr-code-outline'}
-              color={color}
-              size={24}
-            />
-          ),
-        }}
-      />
+          tabBarActiveTintColor: COLORS.primary,
+          tabBarInactiveTintColor: COLORS.textSecondary,
+          tabBarShowLabel: true,
 
-      <Tabs.Screen
-        name="history"
-        options={{
-          title: 'History',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'time' : 'time-outline'}
-              color={color}
-              size={24}
-            />
-          ),
-        }}
-      />
+          tabBarStyle: {
+            backgroundColor: COLORS.card,
+            borderTopColor: COLORS.border,
+            height: 65,
+            paddingTop: 6,
+            paddingBottom: 6,
+          },
 
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Profile',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'person' : 'person-outline'}
-              color={color}
-              size={24}
-            />
-          ),
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '600',
+          },
         }}
-      />
+      >
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            tabBarLabel: 'Home',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'home-sharp' : 'home-outline'}
+                color={color}
+                size={23}
+              />
+            ),
+          }}
+        />
 
-      <Tabs.Screen
-        name="teacher"
-        options={{
-          title: 'Create Event',
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? 'clipboard' : 'clipboard-outline'}
-              color={color}
-              size={24}
-            />
-          ),
-        }}
-      />
-    </Tabs>
+        <Tabs.Screen
+          name="scan"
+          options={{
+            title: 'Scan',
+            tabBarLabel: 'Scan',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'qr-code' : 'qr-code-outline'}
+                color={color}
+                size={23}
+              />
+            ),
+          }}
+        />
+
+        <Tabs.Screen
+          name="history"
+          options={{
+            title: 'History',
+            tabBarLabel: 'History',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'time' : 'time-outline'}
+                color={color}
+                size={23}
+              />
+            ),
+          }}
+        />
+
+        <Tabs.Screen
+          name="profile"
+          options={{
+            title: 'Profile',
+            tabBarLabel: 'Profile',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'person' : 'person-outline'}
+                color={color}
+                size={23}
+              />
+            ),
+          }}
+        />
+
+        <Tabs.Screen
+          name="teacher"
+          options={{
+            title: 'Create Event',
+            tabBarLabel: 'Create Event',
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? 'clipboard' : 'clipboard-outline'}
+                color={color}
+                size={23}
+              />
+            ),
+          }}
+        />
+      </Tabs>
+    </SafeAreaView>
   );
 }
