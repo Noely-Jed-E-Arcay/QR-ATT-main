@@ -8,11 +8,19 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: COLORS.primary,
-        headerStyle: {
-          backgroundColor: COLORS.background,
-        },
+        tabBarShowLabel: false,
+
+        // Smaller top header
+        headerTitle: '',
+        headerTransparent: false,
         headerShadowVisible: false,
         headerTintColor: COLORS.textPrimary,
+        headerStyle: {
+          backgroundColor: COLORS.background,
+          height: 48,
+        },
+
+        // Bottom tab bar
         tabBarStyle: {
           backgroundColor: COLORS.card,
           borderTopColor: COLORS.border,

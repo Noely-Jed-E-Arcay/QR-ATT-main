@@ -1,33 +1,51 @@
 import { Stack } from 'expo-router';
+import { COLORS } from '@/constants/colors';
 
 export default function AdministratorLayout() {
   return (
-    <Stack>
+    <Stack
+      screenOptions={{
+        headerStyle: {
+          backgroundColor: COLORS.card,
+        },
+        headerTintColor: COLORS.textPrimary,
+        headerTitleStyle: {
+          fontWeight: '700',
+          fontSize: 17,
+        },
+        headerShadowVisible: false,
+        contentStyle: {
+          backgroundColor: COLORS.background,
+        },
+        headerBackTitle: 'Back',
+      }}
+    >
       <Stack.Screen
         name="index"
         options={{
-          title: 'Administrator',
+          title: 'Administrator Dashboard',
+          headerBackVisible: false,
         }}
       />
 
       <Stack.Screen
         name="users"
         options={{
-          title: 'Users',
+          title: 'User Management',
         }}
       />
 
       <Stack.Screen
         name="events"
         options={{
-          title: 'Events',
+          title: 'Event Management',
         }}
       />
 
       <Stack.Screen
         name="attendance"
         options={{
-          title: 'Attendance',
+          title: 'Attendance Records',
         }}
       />
 

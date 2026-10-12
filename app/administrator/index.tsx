@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 
 import { COLORS } from '@/constants/colors';
@@ -22,44 +23,45 @@ import { getProfile } from '@/lib/profiles';
 export default function AdministratorDashboard() {
   const { user } = useAuth();
   const router = useRouter();
+  const { width } = useWindowDimensions();
+
+  const compact = width < 380;
 
   const [dashboard, setDashboard] =
     useState<AdminDashboard | null>(null);
-
-  const [adminName, setAdminName] =
-    useState('Administrator');
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [refreshing, setRefreshing] =
-    useState(false);
-
-  const [error, setError] =
-    useState<string | null>(null);
+  const [adminName, setAdminName] = useState('Administrator');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadDashboard = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setDashboard(null);
+      setLoading(false);
+      return;
+    }
 
     setError(null);
 
-    const [dashboardResult, profile] =
-      await Promise.all([
+    try {
+      const [dashboardResult, profile] = await Promise.all([
         getAdminDashboard(),
         getProfile(user.id),
       ]);
 
-    if (dashboardResult.error) {
-      setError(dashboardResult.error);
-    } else {
-      setDashboard(dashboardResult.data);
+      if (dashboardResult.error) {
+        setError(dashboardResult.error);
+      } else {
+        setDashboard(dashboardResult.data);
+      }
+
+      setAdminName(profile?.full_name || 'Administrator');
+    } catch (err) {
+      console.error('Failed to load administrator dashboard:', err);
+      setError('Unable to load dashboard information. Please try again.');
+    } finally {
+      setLoading(false);
     }
-
-    setAdminName(
-      profile?.full_name || 'Administrator'
-    );
-
-    setLoading(false);
   }, [user]);
 
   useFocusEffect(
@@ -68,36 +70,85 @@ export default function AdministratorDashboard() {
     }, [loadDashboard])
   );
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setRefreshing(true);
+    try {
+      await loadDashboard();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadDashboard]);
 
-    await loadDashboard();
-
-    setRefreshing(false);
-  };
-
-  // ============================================================
-  // LOADING
-  // ============================================================
+  const managementActions = [
+    {
+      icon: 'people-outline' as const,
+      title: 'Manage Users',
+      description: 'View accounts and roles.',
+      color: '#8B684D',
+      onPress: () => router.push('/administrator/users'),
+    },
+    {
+      icon: 'person-add-outline' as const,
+      title: 'Teacher Verification',
+      description: 'Review teacher requests.',
+      color: '#A4774F',
+      onPress: () => router.push('/administrator/teacher-requests'),
+    },
+    {
+      icon: 'calendar-outline' as const,
+      title: 'Manage Events',
+      description: 'Create and update events.',
+      color: '#7A6858',
+      onPress: () => router.push('/administrator/events'),
+    },
+    {
+      icon: 'create-outline' as const,
+      title: 'Attendance',
+      description: 'Review attendance records.',
+      color: '#66816B',
+      onPress: () => router.push('/administrator/attendance'),
+    },
+    {
+      icon: 'bar-chart-outline' as const,
+      title: 'Reports & Records',
+      description: 'View reports and activity.',
+      color: '#8B684D',
+      onPress: () => router.push('/administrator/reports'),
+    },
+  ];
 
   if (loading) {
     return (
       <View style={styles.center}>
+        <View style={styles.loadingIcon}>
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={28}
+            color={COLORS.primary}
+          />
+        </View>
+
         <ActivityIndicator
           size="large"
           color={COLORS.primary}
+          style={styles.loadingSpinner}
         />
 
+        <Text style={styles.loadingTitle}>Loading dashboard</Text>
+
         <Text style={styles.muted}>
-          Loading administrator dashboard...
+          Retrieving the latest school records.
         </Text>
       </View>
     );
   }
 
-  // ============================================================
-  // DASHBOARD
-  // ============================================================
+  const totalUsers = dashboard?.userCount ?? 0;
+  const totalStudents = dashboard?.studentCount ?? 0;
+  const totalTeachers = dashboard?.teacherCount ?? 0;
+  const totalAdmins = dashboard?.administratorCount ?? 0;
+  const totalEvents = dashboard?.eventCount ?? 0;
+  const totalAttendance = dashboard?.attendanceCount ?? 0;
 
   return (
     <ScrollView
@@ -107,270 +158,451 @@ export default function AdministratorDashboard() {
         <RefreshControl
           refreshing={refreshing}
           onRefresh={refresh}
+          tintColor={COLORS.primary}
+          colors={[COLORS.primary]}
         />
       }
       showsVerticalScrollIndicator={false}
     >
-      {/* ======================================================
-          HEADER
-          ====================================================== */}
+      {/* HEADER */}
+      <View style={styles.topBar}>
+        <View style={styles.brandIcon}>
+          <Ionicons
+            name="qr-code-outline"
+            size={23}
+            color={COLORS.surface}
+          />
+        </View>
 
-      <Text style={styles.eyebrow}>
-        Administrator
-      </Text>
+        <View style={styles.brandTextContainer}>
+          <Text style={styles.brandTitle}>QR Attendance</Text>
+          <Text style={styles.brandSubtitle}>SCHOOL MANAGEMENT</Text>
+        </View>
 
-      <Text style={styles.title}>
-        Welcome, {adminName}
-      </Text>
+        <View style={styles.adminBadge}>
+          <Ionicons
+            name="shield-checkmark"
+            size={19}
+            color={COLORS.primary}
+          />
+        </View>
+      </View>
 
-      <Text style={styles.subtitle}>
-        Manage users, events, attendance, teacher
-        verification, and system records from one place.
-      </Text>
+      {/* WELCOME CARD */}
+      <View style={styles.welcomeCard}>
+        <View style={styles.welcomeTop}>
+          <View style={styles.welcomeLabelContainer}>
+            <View style={styles.statusDot} />
+            <Text style={styles.welcomeLabel}>
+              ADMIN CONTROL CENTER
+            </Text>
+          </View>
 
-      {/* ======================================================
-          ERROR
-          ====================================================== */}
+          <Ionicons
+            name="grid-outline"
+            size={22}
+            color={COLORS.surface}
+          />
+        </View>
 
-      {error && (
-        <Text style={styles.error}>
-          {error}
+        <Text style={styles.welcomeTitle}>Welcome back,</Text>
+
+        <Text style={styles.adminName} numberOfLines={2}>
+          {adminName}
         </Text>
+
+        <Text style={styles.welcomeDescription}>
+          Manage users, events, attendance, and teacher verification.
+        </Text>
+
+        <View style={styles.welcomeFooter}>
+          <Ionicons
+            name="sync-outline"
+            size={14}
+            color={COLORS.surface}
+          />
+          <Text style={styles.welcomeFooterText}>
+            Pull down to refresh
+          </Text>
+        </View>
+      </View>
+
+      {/* ERROR */}
+      {error && (
+        <View style={styles.errorCard}>
+          <Ionicons
+            name="alert-circle-outline"
+            size={22}
+            color={COLORS.danger}
+          />
+
+          <View style={styles.errorBody}>
+            <Text style={styles.errorTitle}>
+              Unable to update dashboard
+            </Text>
+
+            <Text style={styles.errorText}>{error}</Text>
+
+            <Pressable
+              onPress={loadDashboard}
+              style={styles.retryButton}
+            >
+              <Text style={styles.retryText}>Try again</Text>
+            </Pressable>
+          </View>
+        </View>
       )}
 
-      {/* ======================================================
-          STATISTICS
-          ====================================================== */}
+      {/* STATISTICS */}
+      <SectionHeading
+        title="School Overview"
+        subtitle="Current system statistics"
+        icon="analytics-outline"
+      />
 
-      <View style={styles.grid}>
+      <View style={styles.statsGrid}>
         <StatCard
+          compact={compact}
           icon="people-outline"
-          label="Users"
-          value={dashboard?.userCount ?? 0}
+          label="Total Users"
+          value={totalUsers}
         />
 
         <StatCard
+          compact={compact}
           icon="school-outline"
           label="Students"
-          value={dashboard?.studentCount ?? 0}
+          value={totalStudents}
         />
 
         <StatCard
+          compact={compact}
           icon="briefcase-outline"
           label="Teachers"
-          value={dashboard?.teacherCount ?? 0}
+          value={totalTeachers}
         />
 
         <StatCard
+          compact={compact}
           icon="shield-checkmark-outline"
-          label="Admins"
-          value={dashboard?.administratorCount ?? 0}
+          label="Administrators"
+          value={totalAdmins}
         />
 
         <StatCard
+          compact={compact}
           icon="calendar-outline"
           label="Events"
-          value={dashboard?.eventCount ?? 0}
+          value={totalEvents}
         />
 
         <StatCard
+          compact={compact}
           icon="checkmark-circle-outline"
           label="Attendance"
-          value={dashboard?.attendanceCount ?? 0}
+          value={totalAttendance}
         />
       </View>
 
-      {/* ======================================================
-          QUICK ACTIONS
-          ====================================================== */}
-
-      <Text style={styles.sectionTitle}>
-        Quick Actions
-      </Text>
-
-      <ActionCard
-        icon="people-outline"
-        title="Manage Users"
-        description="View users and update names or roles."
-        onPress={() =>
-          router.push('/administrator/users')
-        }
+      {/* MANAGEMENT */}
+      <SectionHeading
+        title="Management"
+        subtitle="Choose an administrative tool"
+        icon="apps-outline"
       />
 
-      <ActionCard
-        icon="person-add-outline"
-        title="Teacher Verification"
-        description="Review and approve or reject teacher requests."
-        onPress={() =>
-          router.push('/administrator/teacher-requests')
-        }
+      <View style={styles.managementGrid}>
+        {managementActions.map((action) => (
+          <ManagementCard
+            key={action.title}
+            compact={compact}
+            icon={action.icon}
+            title={action.title}
+            description={action.description}
+            color={action.color}
+            onPress={action.onPress}
+          />
+        ))}
+      </View>
+
+      {/* ANNOUNCEMENTS */}
+      <SectionHeading
+        title="Announcements"
+        subtitle="School community updates"
+        icon="megaphone-outline"
       />
 
-      <ActionCard
-        icon="calendar-outline"
-        title="Manage Events"
-        description="Create, edit, review, or delete events."
-        onPress={() =>
-          router.push('/administrator/events')
-        }
-      />
+      <View style={styles.announcementCard}>
+        <View style={styles.announcementIcon}>
+          <Ionicons
+            name="notifications-outline"
+            size={22}
+            color={COLORS.primary}
+          />
+        </View>
 
-      <ActionCard
-        icon="create-outline"
-        title="Correct Attendance"
-        description="Review and correct attendance timestamps."
-        onPress={() =>
-          router.push('/administrator/attendance')
-        }
-      />
+        <View style={styles.announcementBody}>
+          <View style={styles.announcementTop}>
+            <Text style={styles.announcementTitle}>
+              School Announcements
+            </Text>
 
-      <ActionCard
-        icon="bar-chart-outline"
-        title="Reports & Records"
-        description="Review system summaries and recent activity."
-        onPress={() =>
-          router.push('/administrator/reports')
-        }
-      />
-
-      {/* ======================================================
-          RECENT ATTENDANCE
-          ====================================================== */}
-
-      <Text style={styles.sectionTitle}>
-        Recent Attendance
-      </Text>
-
-      {dashboard?.recentAttendance.length ? (
-        dashboard.recentAttendance.map((record) => (
-          <View
-            key={record.id}
-            style={styles.activityCard}
-          >
-            <View style={styles.activityIcon}>
-              <Ionicons
-                name="checkmark"
-                size={18}
-                color={COLORS.success}
-              />
-            </View>
-
-            <View style={styles.activityBody}>
-              <Text style={styles.activityTitle}>
-                {record.student_name ||
-                  record.student_email ||
-                  record.student_id}
-              </Text>
-
-              <Text style={styles.activityText}>
-                {record.event_title} ·{' '}
-                {formatDate(record.scanned_at)}
-              </Text>
+            <View style={styles.comingSoonBadge}>
+              <Text style={styles.comingSoonText}>PHASE 2</Text>
             </View>
           </View>
-        ))
+
+          <Text style={styles.announcementDescription}>
+            Announcements and unread updates will be available in a future update.
+          </Text>
+        </View>
+      </View>
+
+      {/* RECENT ATTENDANCE */}
+      <SectionHeading
+        title="Recent Attendance"
+        subtitle="Latest recorded check-ins"
+        icon="time-outline"
+      />
+
+      {dashboard?.recentAttendance?.length ? (
+        <View style={styles.activityList}>
+          {dashboard.recentAttendance.map((record, index) => (
+            <View
+              key={record.id}
+              style={[
+                styles.activityCard,
+                index === dashboard.recentAttendance.length - 1 &&
+                  styles.lastActivityCard,
+              ]}
+            >
+              <View style={styles.activityIcon}>
+                <Ionicons
+                  name="checkmark-circle"
+                  size={20}
+                  color={COLORS.success}
+                />
+              </View>
+
+              <View style={styles.activityBody}>
+                <Text
+                  style={styles.activityTitle}
+                  numberOfLines={1}
+                >
+                  {record.student_name ||
+                    record.student_email ||
+                    record.student_id}
+                </Text>
+
+                <Text
+                  style={styles.activityEvent}
+                  numberOfLines={2}
+                >
+                  {record.event_title}
+                </Text>
+
+                <View style={styles.activityTime}>
+                  <Ionicons
+                    name="time-outline"
+                    size={12}
+                    color={COLORS.textSecondary}
+                  />
+                  <Text style={styles.activityDate}>
+                    {formatDate(record.scanned_at)}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.recordBadge}>
+                <Text style={styles.recordBadgeText}>RECORDED</Text>
+              </View>
+            </View>
+          ))}
+        </View>
       ) : (
-        <Text style={styles.muted}>
-          No attendance records yet.
-        </Text>
+        <View style={styles.emptyCard}>
+          <View style={styles.emptyIcon}>
+            <Ionicons
+              name="clipboard-outline"
+              size={25}
+              color={COLORS.primary}
+            />
+          </View>
+
+          <Text style={styles.emptyTitle}>
+            No attendance records yet
+          </Text>
+
+          <Text style={styles.emptyDescription}>
+            Student check-ins will appear here once attendance is recorded.
+          </Text>
+        </View>
       )}
+
+      {/* FOOTER */}
+      <View style={styles.footer}>
+        <View style={styles.footerDivider} />
+
+        <View style={styles.footerBrand}>
+          <Ionicons
+            name="qr-code-outline"
+            size={16}
+            color={COLORS.primary}
+          />
+          <Text style={styles.footerText}>
+            QR Attendance Management System
+          </Text>
+        </View>
+
+        <Text style={styles.footerCaption}>
+          School event attendance made simple.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
 
-// ============================================================
+// SECTION HEADING
+
+function SectionHeading({
+  title,
+  subtitle,
+  icon,
+}: {
+  title: string;
+  subtitle: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.sectionHeading}>
+      <View style={styles.sectionHeadingText}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+      </View>
+
+      <View style={styles.sectionIcon}>
+        <Ionicons
+          name={icon}
+          size={20}
+          color={COLORS.primary}
+        />
+      </View>
+    </View>
+  );
+}
+
 // STAT CARD
-// ============================================================
 
 function StatCard({
   icon,
   label,
   value,
+  compact,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   value: number;
+  compact: boolean;
 }) {
   return (
-    <View style={styles.statCard}>
-      <Ionicons
-        name={icon}
-        size={22}
-        color={COLORS.primary}
-      />
+    <View
+      style={[
+        styles.statCard,
+        compact && styles.statCardCompact,
+      ]}
+    >
+      <View style={styles.statIcon}>
+        <Ionicons
+          name={icon}
+          size={19}
+          color={COLORS.primary}
+        />
+      </View>
 
       <Text style={styles.statValue}>
-        {value}
+        {value.toLocaleString()}
       </Text>
 
-      <Text style={styles.statLabel}>
+      <Text style={styles.statLabel} numberOfLines={2}>
         {label}
       </Text>
     </View>
   );
 }
 
-// ============================================================
-// ACTION CARD
-// ============================================================
+// MANAGEMENT CARD
 
-function ActionCard({
+function ManagementCard({
   icon,
   title,
   description,
+  color,
   onPress,
+  compact,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   description: string;
+  color: string;
   onPress: () => void;
+  compact: boolean;
 }) {
   return (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${description}`}
       onPress={onPress}
       style={({ pressed }) => [
-        styles.actionCard,
+        styles.managementCard,
+        compact && styles.managementCardCompact,
         pressed && styles.pressed,
       ]}
     >
-      <View style={styles.actionIcon}>
+      <View
+        style={[
+          styles.managementIcon,
+          { backgroundColor: `${color}18` },
+        ]}
+      >
+        <Ionicons name={icon} size={22} color={color} />
+      </View>
+
+      <Text style={styles.managementTitle} numberOfLines={2}>
+        {title}
+      </Text>
+
+      <Text
+        style={styles.managementDescription}
+        numberOfLines={2}
+      >
+        {description}
+      </Text>
+
+      <View style={styles.managementFooter}>
+        <Text style={styles.openLabel}>Open</Text>
         <Ionicons
-          name={icon}
-          size={22}
-          color={COLORS.primary}
+          name="arrow-forward"
+          size={14}
+          color={color}
         />
       </View>
-
-      <View style={styles.actionBody}>
-        <Text style={styles.actionTitle}>
-          {title}
-        </Text>
-
-        <Text style={styles.actionDescription}>
-          {description}
-        </Text>
-      </View>
-
-      <Ionicons
-        name="chevron-forward"
-        size={20}
-        color={COLORS.textSecondary}
-      />
     </Pressable>
   );
 }
 
-// ============================================================
-// FORMAT DATE
-// ============================================================
+// DATE FORMATTER
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Date unavailable';
+  }
+
+  return date.toLocaleString();
 }
 
-// ============================================================
 // STYLES
-// ============================================================
 
 const styles = StyleSheet.create({
   container: {
@@ -379,8 +611,9 @@ const styles = StyleSheet.create({
   },
 
   content: {
-    padding: 20,
-    paddingBottom: 40,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 28,
   },
 
   center: {
@@ -391,156 +624,436 @@ const styles = StyleSheet.create({
     padding: 24,
   },
 
+  loadingIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  loadingSpinner: {
+    marginTop: 18,
+  },
+
+  loadingTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 14,
+  },
+
   muted: {
     color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
     marginTop: 6,
+    textAlign: 'center',
   },
 
-  eyebrow: {
-    color: COLORS.primary,
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+  // HEADER
+
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 16,
   },
 
-  title: {
+  brandIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: COLORS.textSecondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  brandTextContainer: {
+    flex: 1,
+  },
+
+  brandTitle: {
     color: COLORS.textPrimary,
-    fontSize: 27,
+    fontSize: 16,
     fontWeight: '800',
-    marginTop: 4,
   },
 
-  subtitle: {
+  brandSubtitle: {
     color: COLORS.textSecondary,
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    marginTop: 3,
+  },
+
+  adminBadge: {
+    width: 35,
+    height: 35,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // WELCOME
+
+  welcomeCard: {
+    backgroundColor: COLORS.textSecondary,
+    borderRadius: 20,
+    padding: 17,
+    marginBottom: 22,
+  },
+
+  welcomeTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+
+  welcomeLabelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: COLORS.primary,
+  },
+
+  welcomeLabel: {
+    color: COLORS.surface,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+
+  welcomeTitle: {
+    color: COLORS.surface,
     fontSize: 14,
-    lineHeight: 20,
-    marginTop: 6,
+    fontWeight: '500',
+  },
+
+  adminName: {
+    color: '#FFFFFF',
+    fontSize: 23,
+    fontWeight: '800',
+    marginTop: 3,
+  },
+
+  welcomeDescription: {
+    color: COLORS.background,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8,
+  },
+
+  welcomeFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.15)',
+    marginTop: 14,
+    paddingTop: 10,
+  },
+
+  welcomeFooterText: {
+    color: COLORS.surface,
+    fontSize: 10,
+  },
+
+  // ERROR
+
+  errorCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#FDECEC',
+    borderRadius: 14,
+    padding: 12,
     marginBottom: 18,
   },
 
-  error: {
-    color: COLORS.danger,
-    backgroundColor: '#FDECEC',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 12,
+  errorBody: {
+    flex: 1,
   },
 
-  // ==========================================================
-  // STATISTICS
-  // ==========================================================
+  errorTitle: {
+    color: COLORS.danger,
+    fontSize: 12,
+    fontWeight: '800',
+  },
 
-  grid: {
+  errorText: {
+    color: COLORS.danger,
+    fontSize: 11,
+    lineHeight: 17,
+    marginTop: 4,
+  },
+
+  retryButton: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+
+  retryText: {
+    color: COLORS.danger,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+
+  // SECTION HEADINGS
+
+  sectionHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 11,
+  },
+
+  sectionHeadingText: {
+    flex: 1,
+  },
+
+  sectionTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
+  sectionSubtitle: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    marginTop: 3,
+  },
+
+  sectionIcon: {
+    width: 35,
+    height: 35,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+
+  // STATISTICS
+
+  statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 5,
+    justifyContent: 'space-between',
+    rowGap: 9,
+    marginBottom: 23,
   },
 
   statCard: {
     width: '31.8%',
-    minWidth: 95,
+    minHeight: 104,
     backgroundColor: COLORS.card,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 13,
+    borderRadius: 15,
+    padding: 9,
+  },
+
+  statCardCompact: {
+    padding: 8,
+  },
+
+  statIcon: {
+    width: 31,
+    height: 31,
+    borderRadius: 10,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   statValue: {
     color: COLORS.textPrimary,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     marginTop: 7,
   },
 
   statLabel: {
     color: COLORS.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: 9,
+    fontWeight: '600',
+    lineHeight: 12,
+    marginTop: 3,
   },
 
-  // ==========================================================
-  // SECTION
-  // ==========================================================
+  // MANAGEMENT GRID
 
-  sectionTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 18,
-    fontWeight: '700',
-    marginTop: 24,
-    marginBottom: 10,
+  managementGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+    marginBottom: 23,
   },
 
-  // ==========================================================
-  // ACTION CARDS
-  // ==========================================================
-
-  actionCard: {
+  managementCard: {
+    width: '48.5%',
+    minHeight: 145,
     backgroundColor: COLORS.card,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 14,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
+    borderRadius: 16,
+    padding: 12,
+  },
+
+  managementCardCompact: {
+    padding: 10,
   },
 
   pressed: {
     opacity: 0.75,
+    transform: [{ scale: 0.98 }],
   },
 
-  actionIcon: {
-    width: 44,
-    height: 44,
+  managementIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 9,
+  },
+
+  managementTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 16,
+  },
+
+  managementDescription: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 4,
+    flex: 1,
+  },
+
+  managementFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    borderTopColor: COLORS.surface,
+    paddingTop: 7,
+    marginTop: 8,
+  },
+
+  openLabel: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  // ANNOUNCEMENTS
+
+  announcementCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: 15,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 23,
+  },
+
+  announcementIcon: {
+    width: 38,
+    height: 38,
     borderRadius: 12,
     backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
   },
 
-  actionBody: {
+  announcementBody: {
     flex: 1,
   },
 
-  actionTitle: {
+  announcementTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+
+  announcementTitle: {
     color: COLORS.textPrimary,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '800',
   },
 
-  actionDescription: {
+  comingSoonBadge: {
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+
+  comingSoonText: {
     color: COLORS.textSecondary,
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 2,
+    fontSize: 8,
+    fontWeight: '800',
   },
 
-  // ==========================================================
-  // RECENT ATTENDANCE
-  // ==========================================================
+  announcementDescription: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 6,
+  },
 
-  activityCard: {
+  // RECENT ATTENDANCE
+
+  activityList: {
     backgroundColor: COLORS.card,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 15,
+    paddingHorizontal: 10,
+  },
+
+  activityCard: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
+    alignItems: 'flex-start',
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.surface,
+    gap: 8,
+  },
+
+  lastActivityCard: {
+    borderBottomWidth: 0,
   },
 
   activityIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     backgroundColor: '#E7F4EA',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
 
   activityBody: {
@@ -549,13 +1062,110 @@ const styles = StyleSheet.create({
 
   activityTitle: {
     color: COLORS.textPrimary,
-    fontWeight: '700',
-    fontSize: 14,
+    fontSize: 11,
+    fontWeight: '800',
   },
 
-  activityText: {
+  activityEvent: {
     color: COLORS.textSecondary,
-    fontSize: 12,
+    fontSize: 10,
+    lineHeight: 14,
     marginTop: 3,
+  },
+
+  activityTime: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 5,
+  },
+
+  activityDate: {
+    color: COLORS.textSecondary,
+    fontSize: 9,
+    flexShrink: 1,
+  },
+
+  recordBadge: {
+    backgroundColor: '#E7F4EA',
+    paddingHorizontal: 5,
+    paddingVertical: 4,
+    borderRadius: 7,
+    marginTop: 2,
+  },
+
+  recordBadgeText: {
+    color: COLORS.success,
+    fontSize: 7,
+    fontWeight: '800',
+  },
+
+  emptyCard: {
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 15,
+    padding: 20,
+    marginBottom: 5,
+  },
+
+  emptyIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  emptyTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 10,
+    textAlign: 'center',
+  },
+
+  emptyDescription: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 5,
+    textAlign: 'center',
+  },
+
+  // FOOTER
+
+  footer: {
+    alignItems: 'center',
+    marginTop: 24,
+  },
+
+  footerDivider: {
+    width: 38,
+    height: 3,
+    borderRadius: 3,
+    backgroundColor: COLORS.surface,
+    marginBottom: 13,
+  },
+
+  footerBrand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+
+  footerText: {
+    color: COLORS.textPrimary,
+    fontSize: 9,
+    fontWeight: '800',
+  },
+
+  footerCaption: {
+    color: COLORS.textSecondary,
+    fontSize: 9,
+    marginTop: 5,
   },
 });
