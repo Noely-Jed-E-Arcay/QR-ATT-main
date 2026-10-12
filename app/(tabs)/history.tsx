@@ -1,9 +1,13 @@
+
 import Ionicons from '@expo/vector-icons/Ionicons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,80 +21,143 @@ import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
 import {
   getAttendanceHistory,
-  type AttendanceRecord,
   getTeacherEventAttendance,
+  type AttendanceRecord,
   type TeacherEventAttendance,
 } from '@/lib/attendance';
-import { deleteEvent, updateEvent } from '@/lib/events';
+import {
+  deleteEvent,
+  getEventsByTeacher,
+  updateEvent,
+} from '@/lib/events';
 import { getProfile, type Role } from '@/lib/profiles';
 import { buildQRPayload } from '@/lib/qr';
 
-type EventStatus = 'Upcoming' | 'Ongoing' | 'Ended';
+type HistoryEvent = TeacherEventAttendance & {
+  createdAt: string | null;
+  location: string | null;
+  description: string | null;
+};
+
+type EventGroup = {
+  key: string;
+  events: HistoryEvent[];
+};
+
+type EditPickerType =
+  | 'startDate'
+  | 'startTime'
+  | 'endDate'
+  | 'endTime'
+  | null;
 
 export default function HistoryScreen() {
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<Role | null>(null);
+  const [studentRecords, setStudentRecords] = useState<AttendanceRecord[]>([]);
+  const [teacherEvents, setTeacherEvents] = useState<HistoryEvent[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
-  const [studentRecords, setStudentRecords] =
-    useState<AttendanceRecord[]>([]);
-
-  const [teacherEvents, setTeacherEvents] =
-    useState<TeacherEventAttendance[]>([]);
-
-  const [expandedEventId, setExpandedEventId] =
-    useState<string | null>(null);
-
-  // EDIT EVENT
-  const [editingEventId, setEditingEventId] =
-    useState<string | null>(null);
+  const [attendeeEvent, setAttendeeEvent] = useState<HistoryEvent | null>(null);
+  const [qrEvent, setQrEvent] = useState<HistoryEvent | null>(null);
+  const [editingEvent, setEditingEvent] = useState<HistoryEvent | null>(null);
 
   const [editTitle, setEditTitle] = useState('');
-  const [editStart, setEditStart] = useState('');
-  const [editEnd, setEditEnd] = useState('');
+  const [editStartDate, setEditStartDate] = useState<Date | null>(null);
+  const [editEndDate, setEditEndDate] = useState<Date | null>(null);
   const [editLocation, setEditLocation] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [activeEditPicker, setActiveEditPicker] =
+    useState<EditPickerType>(null);
 
-  const [savingEdit, setSavingEdit] = useState(false);
-
-  const [deletingEventId, setDeletingEventId] =
-    useState<string | null>(null);
-
-  // ============================================================
-  // LOAD HISTORY
-  // ============================================================
+  const [savingEvent, setSavingEvent] = useState(false);
+  const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!user) {
+      setRole(null);
+      setTeacherEvents([]);
+      setStudentRecords([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
 
-    const profile = await getProfile(user.id);
-    const currentRole = profile?.role ?? 'student';
+    try {
+      const profile = await getProfile(user.id);
+      const currentRole = profile?.role ?? 'student';
 
-    setRole(currentRole);
+      setRole(currentRole);
 
-    if (
-      currentRole === 'teacher' ||
-      currentRole === 'admin'
-    ) {
-      const events =
-        await getTeacherEventAttendance(user.id);
+      if (currentRole === 'teacher' || currentRole === 'admin') {
+        const [attendance, eventsResult] = await Promise.all([
+          getTeacherEventAttendance(user.id),
+          getEventsByTeacher(),
+        ]);
 
-      setTeacherEvents(events);
-      setStudentRecords([]);
-    } else {
-      const records =
-        await getAttendanceHistory(user.id);
+        if (eventsResult.error) {
+          throw new Error(eventsResult.error);
+        }
 
-      setStudentRecords(records);
-      setTeacherEvents([]);
+        const metadata = new Map(
+          eventsResult.events.map((event) => [
+            event.id,
+            {
+              createdAt: event.created_at ?? null,
+              location: event.location ?? null,
+              description: event.description ?? null,
+            },
+          ])
+        );
+
+        const merged: HistoryEvent[] = attendance.map((event) => {
+          const attendanceData = event as TeacherEventAttendance & {
+            location?: string | null;
+            description?: string | null;
+          };
+
+          const eventMetadata = metadata.get(event.eventId);
+
+          return {
+            ...event,
+            createdAt: eventMetadata?.createdAt ?? null,
+            location:
+              attendanceData.location ?? eventMetadata?.location ?? null,
+            description:
+              attendanceData.description ??
+              eventMetadata?.description ??
+              null,
+          };
+        });
+
+        merged.sort(
+          (a, b) =>
+            new Date(b.createdAt ?? 0).getTime() -
+            new Date(a.createdAt ?? 0).getTime()
+        );
+
+        setTeacherEvents(merged);
+        setStudentRecords([]);
+      } else {
+        const records = await getAttendanceHistory(user.id);
+        setStudentRecords(records);
+        setTeacherEvents([]);
+      }
+    } catch (error) {
+      console.error('Failed to load history:', error);
+      Alert.alert(
+        'Loading Failed',
+        error instanceof Error
+          ? error.message
+          : 'Unable to load attendance history.'
+      );
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }, [user]);
 
   useFocusEffect(
@@ -99,1662 +166,1462 @@ export default function HistoryScreen() {
     }, [load])
   );
 
-  // ============================================================
-  // START EDITING
-  // ============================================================
+  const eventGroups = useMemo<EventGroup[]>(() => {
+    const filtered = selectedDate
+      ? teacherEvents.filter(
+          (event) => getDateKey(event.startTime) === selectedDate
+        )
+      : teacherEvents;
 
-  const startEditing = (
-    event: TeacherEventAttendance
-  ) => {
-    setEditingEventId(event.eventId);
+    const groups = new Map<string, HistoryEvent[]>();
 
+    filtered.forEach((event) => {
+      const key = getDateKey(event.startTime) ?? 'unscheduled';
+      groups.set(key, [...(groups.get(key) ?? []), event]);
+    });
+
+    return [...groups.entries()]
+      .map(([key, events]) => ({
+        key,
+        events: events.sort(
+          (a, b) =>
+            new Date(b.createdAt ?? 0).getTime() -
+            new Date(a.createdAt ?? 0).getTime()
+        ),
+      }))
+      .sort((a, b) =>
+        a.key === 'unscheduled'
+          ? 1
+          : b.key === 'unscheduled'
+            ? -1
+            : b.key.localeCompare(a.key)
+      );
+  }, [teacherEvents, selectedDate]);
+
+  const totalAttendees = teacherEvents.reduce(
+    (total, event) => total + event.attendeeCount,
+    0
+  );
+
+  const handleEditEvent = (event: HistoryEvent) => {
+    setEditingEvent(event);
     setEditTitle(event.title);
-
-    setEditStart(
-      event.startTime
-        ? formatDateForInput(event.startTime)
-        : ''
-    );
-
-    setEditEnd(
-      event.endTime
-        ? formatDateForInput(event.endTime)
-        : ''
-    );
-
-    setEditLocation(
-      event.location ?? ''
-    );
+    setEditStartDate(parseDate(event.startTime));
+    setEditEndDate(parseDate(event.endTime));
+    setEditLocation(event.location ?? '');
+    setEditDescription(event.description ?? '');
+    setActiveEditPicker(null);
   };
 
-  // ============================================================
-  // CANCEL EDITING
-  // ============================================================
+  const handleEditPickerChange = (
+    event: { type: string },
+    selected: Date | undefined
+  ) => {
+    if (Platform.OS !== 'ios') {
+      setActiveEditPicker(null);
+    }
 
-  const cancelEditing = () => {
-    setEditingEventId(null);
-    setEditTitle('');
-    setEditStart('');
-    setEditEnd('');
-    setEditLocation('');
-  };
-
-  // ============================================================
-  // SAVE EVENT EDIT
-  // ============================================================
-
-  const handleSaveEdit = async () => {
-    if (!editingEventId) {
+    if (event.type === 'dismissed' || !selected) {
       return;
     }
 
-    const title = editTitle.trim();
-    const location = editLocation.trim();
+    if (activeEditPicker === 'startDate') {
+      setEditStartDate((previous) =>
+        combineDateAndTime(selected, previous ?? new Date())
+      );
+    } else if (activeEditPicker === 'startTime') {
+      setEditStartDate((previous) =>
+        combineDateAndTime(previous ?? new Date(), selected)
+      );
+    } else if (activeEditPicker === 'endDate') {
+      setEditEndDate((previous) =>
+        combineDateAndTime(selected, previous ?? new Date())
+      );
+    } else if (activeEditPicker === 'endTime') {
+      setEditEndDate((previous) =>
+        combineDateAndTime(previous ?? new Date(), selected)
+      );
+    }
+  };
 
-    if (!title) {
+  const handleSaveEvent = async () => {
+    if (!editingEvent || !editTitle.trim()) {
+      Alert.alert('Invalid Input', 'Event title is required.');
+      return;
+    }
+
+    const parsedStart = editStartDate ? editStartDate.toISOString() : null;
+    const parsedEnd = editEndDate ? editEndDate.toISOString() : null;
+
+    if (
+      parsedStart &&
+      parsedEnd &&
+      new Date(parsedEnd).getTime() <= new Date(parsedStart).getTime()
+    ) {
       Alert.alert(
-        'Missing Event Title',
-        'Please enter an event title.'
+        'Invalid Date or Time',
+        'The end date and time must be later than the start date and time.'
       );
       return;
     }
 
-    setSavingEdit(true);
+    setSavingEvent(true);
 
-    const { error } = await updateEvent(
-      editingEventId,
-      {
-        title,
-        start: editStart.trim(),
-        end: editEnd.trim(),
-        location,
+    try {
+      const { error } = await updateEvent(editingEvent.eventId, {
+        title: editTitle.trim(),
+        start: parsedStart,
+        end: parsedEnd,
+        location: editLocation.trim(),
+        description: editDescription.trim(),
+      });
+
+      if (error) {
+        Alert.alert('Update Failed', error);
+        return;
       }
-    );
 
-    setSavingEdit(false);
+      setEditingEvent(null);
+      setActiveEditPicker(null);
+      await load();
 
-    if (error) {
+      Alert.alert('Success', 'Event details updated successfully.');
+    } catch (error) {
+      console.error('Update failed:', error);
       Alert.alert(
         'Update Failed',
-        error
+        error instanceof Error ? error.message : 'Unable to update event.'
       );
-      return;
+    } finally {
+      setSavingEvent(false);
     }
-
-    Alert.alert(
-      'Event Updated',
-      'The event has been updated successfully.'
-    );
-
-    cancelEditing();
-
-    await load();
   };
 
-  // ============================================================
-  // DELETE EVENT
-  // ============================================================
-
-  const handleDeleteEvent = (
-    event: TeacherEventAttendance
-  ) => {
+  const handleDeleteEvent = (event: HistoryEvent) => {
     Alert.alert(
       'Delete Event',
-      `Are you sure you want to delete "${event.title}"?\n\nThis will also remove the event from the attendance history.`,
+      `Are you sure you want to delete "${event.title}"?`,
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
+        { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
-
           onPress: async () => {
-            setDeletingEventId(
-              event.eventId
-            );
+            setDeletingEventId(event.eventId);
 
-            const { error } =
-              await deleteEvent(
-                event.eventId
-              );
+            try {
+              const { error } = await deleteEvent(event.eventId);
 
-            setDeletingEventId(null);
+              if (error) {
+                Alert.alert('Delete Failed', error);
+                return;
+              }
 
-            if (error) {
-              Alert.alert(
-                'Delete Failed',
-                error
-              );
-              return;
+              if (attendeeEvent?.eventId === event.eventId) {
+                setAttendeeEvent(null);
+              }
+
+              if (qrEvent?.eventId === event.eventId) {
+                setQrEvent(null);
+              }
+
+              if (editingEvent?.eventId === event.eventId) {
+                setEditingEvent(null);
+              }
+
+              await load();
+              Alert.alert('Success', 'Event deleted successfully.');
+            } catch (error) {
+              console.error('Delete failed:', error);
+              Alert.alert('Delete Failed', 'Unable to delete the event.');
+            } finally {
+              setDeletingEventId(null);
             }
-
-            if (
-              expandedEventId ===
-              event.eventId
-            ) {
-              setExpandedEventId(null);
-            }
-
-            if (
-              editingEventId ===
-              event.eventId
-            ) {
-              cancelEditing();
-            }
-
-            Alert.alert(
-              'Event Deleted',
-              'The event has been deleted successfully.'
-            );
-
-            await load();
           },
         },
       ]
     );
   };
 
-  // ============================================================
-  // LOADING
-  // ============================================================
-
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator
-          size="large"
-          color={COLORS.primary}
-        />
-
-        <Text style={styles.loadingText}>
-          Loading attendance history...
-        </Text>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.muted}>Loading history...</Text>
       </View>
     );
   }
 
-  // ============================================================
-  // TEACHER / ADMIN HISTORY
-  // ============================================================
-
-  if (
-    role === 'teacher' ||
-    role === 'admin'
-  ) {
+  if (role === 'teacher' || role === 'admin') {
     return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <Text style={styles.title}>
-          Attendance History
-        </Text>
+      <>
+        <ScrollView
+          style={styles.container}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.pageHeader}>
+            <View>
+              <Text style={styles.title}>Attendance History</Text>
+              <Text style={styles.subtitle}>Manage your events</Text>
+            </View>
+            <Ionicons
+              name="calendar-outline"
+              size={28}
+              color={COLORS.primary}
+            />
+          </View>
 
-        <Text style={styles.subtitle}>
-          View your event summaries, saved QR codes,
-          attendance records, and event management
-          options.
-        </Text>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryCard}>
+              <Ionicons
+                name="calendar-outline"
+                size={19}
+                color={COLORS.primary}
+              />
+              <View>
+                <Text style={styles.summaryValue}>{teacherEvents.length}</Text>
+                <Text style={styles.summaryLabel}>Events</Text>
+              </View>
+            </View>
 
-        {teacherEvents.length === 0 ? (
-          <Text style={styles.emptyText}>
-            No events created yet.
-          </Text>
-        ) : (
-          teacherEvents.map((event) => {
-            const expanded =
-              expandedEventId ===
-              event.eventId;
+            <View style={styles.summaryCard}>
+              <Ionicons
+                name="people-outline"
+                size={19}
+                color={COLORS.primary}
+              />
+              <View>
+                <Text style={styles.summaryValue}>{totalAttendees}</Text>
+                <Text style={styles.summaryLabel}>Attendance</Text>
+              </View>
+            </View>
+          </View>
 
-            const editing =
-              editingEventId ===
-              event.eventId;
+          <View style={styles.filterCard}>
+            <View style={styles.filterHeader}>
+              <Ionicons
+                name="funnel-outline"
+                size={17}
+                color={COLORS.primary}
+              />
+              <Text style={styles.cardTitle}>Filter date</Text>
+            </View>
 
-            const status =
-              getEventStatus(
-                event.startTime,
-                event.endTime
-              );
-
-            const sortedAttendees = [
-              ...event.attendees,
-            ].sort((a, b) => {
-              const nameA =
-                a.studentName
-                  ?.trim()
-                  .toLowerCase() || '';
-
-              const nameB =
-                b.studentName
-                  ?.trim()
-                  .toLowerCase() || '';
-
-              return nameA.localeCompare(
-                nameB
-              );
-            });
-
-            return (
-              <View
-                key={event.eventId}
-                style={styles.historyCard}
+            <View style={styles.filterRow}>
+              <Pressable
+                style={styles.dateButton}
+                onPress={() => setShowDatePicker((value) => !value)}
               >
-                {/* ==================================================
-                    EVENT SUMMARY HEADER
-                    ================================================== */}
+                <Text style={styles.dateText}>
+                  {selectedDate ? readableDate(selectedDate) : 'All dates'}
+                </Text>
+                <Ionicons
+                  name="chevron-down"
+                  size={17}
+                  color={COLORS.textSecondary}
+                />
+              </Pressable>
 
+              {selectedDate && (
                 <Pressable
+                  style={styles.clearButton}
                   onPress={() => {
-                    setExpandedEventId(
-                      expanded
-                        ? null
-                        : event.eventId
-                    );
-
-                    if (
-                      editing &&
-                      !expanded
-                    ) {
-                      cancelEditing();
-                    }
+                    setSelectedDate(null);
+                    setShowDatePicker(false);
                   }}
-                  style={({ pressed }) => [
-                    styles.historyHeader,
-                    pressed &&
-                      styles.pressed,
-                  ]}
                 >
-                  <View
-                    style={styles.historyIcon}
-                  >
-                    <Ionicons
-                      name={
-                        expanded
-                          ? 'chevron-down'
-                          : 'chevron-forward'
-                      }
-                      size={20}
-                      color={
-                        COLORS.primary
-                      }
-                    />
-                  </View>
-
-                  <View
-                    style={styles.historyBody}
-                  >
-                    <Text
-                      style={
-                        styles.historyTitle
-                      }
-                    >
-                      {event.title}
-                    </Text>
-
-                    <Text
-                      style={
-                        styles.historyMeta
-                      }
-                    >
-                      Event Code:{' '}
-                      {event.eventCode}
-                    </Text>
-
-                    <Text
-                      style={
-                        styles.historyMeta
-                      }
-                    >
-                      {event.startTime
-                        ? formatDate(
-                            event.startTime
-                          )
-                        : 'No start time'}
-                    </Text>
-
-                    {event.location && (
-                      <Text
-                        style={
-                          styles.historyMeta
-                        }
-                      >
-                        Location:{' '}
-                        {event.location}
-                      </Text>
-                    )}
-                  </View>
-
-                  {/* COUNT + STATUS */}
-
-                  <View
-                    style={
-                      styles.countContainer
-                    }
-                  >
-                    <View
-                      style={
-                        styles.countBadge
-                      }
-                    >
-                      <Text
-                        style={
-                          styles.countValue
-                        }
-                      >
-                        {
-                          event.attendeeCount
-                        }
-                      </Text>
-
-                      <Text
-                        style={
-                          styles.countLabel
-                        }
-                      >
-                        {event.attendeeCount ===
-                        1
-                          ? 'student'
-                          : 'students'}
-                      </Text>
-                    </View>
-
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        status ===
-                          'Upcoming' &&
-                          styles.statusUpcoming,
-                        status ===
-                          'Ongoing' &&
-                          styles.statusOngoing,
-                        status ===
-                          'Ended' &&
-                          styles.statusEnded,
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.statusDot,
-                          status ===
-                            'Upcoming' &&
-                            styles.statusDotUpcoming,
-                          status ===
-                            'Ongoing' &&
-                            styles.statusDotOngoing,
-                          status ===
-                            'Ended' &&
-                            styles.statusDotEnded,
-                        ]}
-                      />
-
-                      <Text
-                        style={[
-                          styles.statusText,
-                          status ===
-                            'Upcoming' &&
-                            styles.statusTextUpcoming,
-                          status ===
-                            'Ongoing' &&
-                            styles.statusTextOngoing,
-                          status ===
-                            'Ended' &&
-                            styles.statusTextEnded,
-                        ]}
-                      >
-                        {status}
-                      </Text>
-                    </View>
-                  </View>
+                  <Text style={styles.link}>Clear</Text>
                 </Pressable>
+              )}
+            </View>
 
-                {/* ==================================================
-                    EXPANDED EVENT
-                    ================================================== */}
+            {showDatePicker && (
+              <DateTimePicker
+                value={selectedDate ? dateFromKey(selectedDate) : new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                onChange={(event, date) => {
+                  if (Platform.OS !== 'ios') setShowDatePicker(false);
 
-                {expanded && (
-                  <View
-                    style={
-                      styles.expandedSection
-                    }
-                  >
-                    {/* ==================================================
-                        EVENT DETAILS
-                        ================================================== */}
+                  if (event.type !== 'dismissed' && date) {
+                    setSelectedDate(dateKey(date));
+                  }
+                }}
+                themeVariant="light"
+              />
+            )}
 
-                    <View
-                      style={
-                        styles.detailsSection
-                      }
-                    >
-                      <Text
-                        style={
-                          styles.detailsTitle
-                        }
-                      >
-                        Event Details
-                      </Text>
+            {showDatePicker && Platform.OS === 'ios' && (
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setShowDatePicker(false)}
+              >
+                <Text style={styles.buttonText}>Done</Text>
+              </Pressable>
+            )}
+          </View>
 
-                      <View
-                        style={
-                          styles.detailRow
-                        }
-                      >
-                        <Ionicons
-                          name="calendar-outline"
-                          size={18}
-                          color={
-                            COLORS.primary
-                          }
-                        />
+          <View style={styles.listHeader}>
+            <Text style={styles.sectionTitle}>
+              {selectedDate ? readableDate(selectedDate) : 'Your Events'}
+            </Text>
+            <Text style={styles.muted}>
+              {eventGroups.reduce(
+                (sum, group) => sum + group.events.length,
+                0
+              )}{' '}
+              shown
+            </Text>
+          </View>
 
-                        <View
-                          style={
-                            styles.detailContent
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.detailLabel
-                            }
-                          >
-                            Starts
-                          </Text>
+          {teacherEvents.length === 0 ? (
+            <Empty
+              icon="calendar-clear-outline"
+              title="No Events Yet"
+              message="Events you create will appear here."
+            />
+          ) : eventGroups.length === 0 ? (
+            <Empty
+              icon="search-outline"
+              title="No Events Found"
+              message="Try another date or clear the filter."
+            />
+          ) : (
+            eventGroups.map((group) => (
+              <View key={group.key}>
+                {selectedDate === null && (
+                  <Text style={styles.groupTitle}>
+                    {group.key === 'unscheduled'
+                      ? 'No Date'
+                      : readableDate(group.key)}
+                  </Text>
+                )}
 
-                          <Text
-                            style={
-                              styles.detailValue
-                            }
-                          >
-                            {event.startTime
-                              ? formatDate(
-                                  event.startTime
-                                )
-                              : 'No start time'}
-                          </Text>
-                        </View>
-                      </View>
+                {group.events.map((event) => {
+                  const status = getEventStatus(
+                    event.startTime,
+                    event.endTime
+                  );
 
-                      <View
-                        style={
-                          styles.detailRow
-                        }
-                      >
-                        <Ionicons
-                          name="time-outline"
-                          size={18}
-                          color={
-                            COLORS.primary
-                          }
-                        />
-
-                        <View
-                          style={
-                            styles.detailContent
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.detailLabel
-                            }
-                          >
-                            Ends
-                          </Text>
-
-                          <Text
-                            style={
-                              styles.detailValue
-                            }
-                          >
-                            {event.endTime
-                              ? formatDate(
-                                  event.endTime
-                                )
-                              : 'No end time'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <View
-                        style={
-                          styles.detailRow
-                        }
-                      >
-                        <Ionicons
-                          name="location-outline"
-                          size={18}
-                          color={
-                            COLORS.primary
-                          }
-                        />
-
-                        <View
-                          style={
-                            styles.detailContent
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.detailLabel
-                            }
-                          >
-                            Location
-                          </Text>
-
-                          <Text
-                            style={
-                              styles.detailValue
-                            }
-                          >
-                            {event.location ||
-                              'No location specified'}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-
-                    {/* ==================================================
-                        QR CODE
-
-                        IMPORTANT:
-                        This uses buildQRPayload()
-                        instead of event.eventCode.
-                        Therefore it contains the same
-                        JSON payload format as the QR
-                        generated by Teacher.
-                        ================================================== */}
-
-                    <View
-                      style={styles.qrSection}
-                    >
-                      <Text
-                        style={styles.qrTitle}
-                      >
-                        Event QR Code
-                      </Text>
-
-                      <Text
-                        style={
-                          styles.qrDescription
-                        }
-                      >
-                        This is the attendance QR
-                        code for this event. It can
-                        be scanned using the Scan tab.
-                      </Text>
-
-                      <View
-                        style={
-                          styles.qrContainer
-                        }
-                      >
-                        <QRCode
-                          value={buildQRPayload(
-                            {
-                              eventId:
-                                event.eventCode,
-                              title:
-                                event.title,
-                              start:
-                                event.startTime ??
-                                undefined,
-                              end:
-                                event.endTime ??
-                                undefined,
-                            }
-                          )}
-                          size={190}
-                          backgroundColor="#FFFFFF"
-                        />
-                      </View>
-
-                      <Text
-                        style={
-                          styles.qrCodeText
-                        }
-                      >
-                        {event.eventCode}
-                      </Text>
-                    </View>
-
-                    {/* ==================================================
-                        EDIT / DELETE
-                        ================================================== */}
-
-                    <View
-                      style={styles.manageRow}
-                    >
+                  return (
+                    <View key={event.eventId} style={styles.eventCard}>
                       <Pressable
-                        onPress={() =>
-                          editing
-                            ? cancelEditing()
-                            : startEditing(
-                                event
-                              )
-                        }
-                        style={({ pressed }) => [
-                          styles.editButton,
-                          pressed &&
-                            styles.buttonPressed,
-                        ]}
+                        style={styles.eventMain}
+                        onPress={() => setAttendeeEvent(event)}
                       >
-                        <Ionicons
-                          name={
-                            editing
-                              ? 'close-outline'
-                              : 'create-outline'
-                          }
-                          size={18}
-                          color="#fff"
-                        />
+                        <View style={styles.eventIcon}>
+                          <Ionicons
+                            name="calendar"
+                            size={20}
+                            color={COLORS.primary}
+                          />
+                        </View>
 
-                        <Text
-                          style={
-                            styles.actionButtonText
-                          }
-                        >
-                          {editing
-                            ? 'Cancel'
-                            : 'Edit Event'}
-                        </Text>
+                        <View style={styles.eventInfo}>
+                          <Text style={styles.eventTitle} numberOfLines={2}>
+                            {event.title}
+                          </Text>
+
+                          <Text style={styles.meta} numberOfLines={1}>
+                            Code: {event.eventCode}
+                          </Text>
+
+                          <View style={styles.detailRow}>
+                            <Ionicons
+                              name="play-outline"
+                              size={13}
+                              color={COLORS.textSecondary}
+                            />
+                            <Text style={styles.metaDetail}>
+                              Start:{' '}
+                              {event.startTime
+                                ? formatDate(event.startTime)
+                                : 'Not set'}
+                            </Text>
+                          </View>
+
+                          <View style={styles.detailRow}>
+                            <Ionicons
+                              name="flag-outline"
+                              size={13}
+                              color={COLORS.textSecondary}
+                            />
+                            <Text style={styles.metaDetail}>
+                              End:{' '}
+                              {event.endTime
+                                ? formatDate(event.endTime)
+                                : 'Not set'}
+                            </Text>
+                          </View>
+
+                          <View style={styles.detailRow}>
+                            <Ionicons
+                              name="location-outline"
+                              size={13}
+                              color={COLORS.textSecondary}
+                            />
+                            <Text style={styles.metaDetail}>
+                              Location:{' '}
+                              {event.location?.trim() || 'Not specified'}
+                            </Text>
+                          </View>
+
+                          <View style={styles.descriptionContainer}>
+                            <Text style={styles.descriptionLabel}>
+                              Description
+                            </Text>
+                            <Text style={styles.descriptionText}>
+                              {event.description?.trim() ||
+                                'No description provided.'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.eventStats}>
+                          <Text style={styles.attendeeCount}>
+                            {event.attendeeCount}
+                          </Text>
+                          <Text style={styles.tinyLabel}>attendees</Text>
+                          <Text
+                            style={[
+                              styles.status,
+                              status === 'Upcoming'
+                                ? styles.upcoming
+                                : status === 'Ongoing'
+                                  ? styles.ongoing
+                                  : styles.ended,
+                            ]}
+                          >
+                            {status}
+                          </Text>
+                        </View>
                       </Pressable>
 
-                      <Pressable
-                        onPress={() =>
-                          handleDeleteEvent(
-                            event
-                          )
-                        }
-                        disabled={
-                          deletingEventId ===
-                          event.eventId
-                        }
-                        style={({ pressed }) => [
-                          styles.deleteButton,
-                          pressed &&
-                            styles.buttonPressed,
-                          deletingEventId ===
-                            event.eventId &&
-                            styles.disabledButton,
-                        ]}
-                      >
-                        <Ionicons
-                          name="trash-outline"
-                          size={18}
-                          color="#fff"
+                      <View style={styles.actions}>
+                        <ActionButton
+                          icon="people-outline"
+                          label="Attendees"
+                          onPress={() => setAttendeeEvent(event)}
                         />
-
-                        <Text
-                          style={
-                            styles.actionButtonText
-                          }
-                        >
-                          {deletingEventId ===
-                          event.eventId
-                            ? 'Deleting...'
-                            : 'Delete Event'}
-                        </Text>
-                      </Pressable>
-                    </View>
-
-                    {/* ==================================================
-                        EDIT FORM
-                        ================================================== */}
-
-                    {editing && (
-                      <View
-                        style={
-                          styles.editBox
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.editTitle
-                          }
-                        >
-                          Edit Event
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.inputLabel
-                          }
-                        >
-                          Event Title
-                        </Text>
-
-                        <TextInput
-                          value={editTitle}
-                          onChangeText={
-                            setEditTitle
-                          }
-                          placeholder="Event title"
-                          placeholderTextColor={
-                            COLORS.textSecondary
-                          }
-                          style={
-                            styles.input
-                          }
+                        <ActionButton
+                          icon="qr-code-outline"
+                          label="QR"
+                          onPress={() => setQrEvent(event)}
                         />
-
-                        <Text
-                          style={
-                            styles.inputLabel
-                          }
-                        >
-                          Location
-                        </Text>
-
-                        <TextInput
-                          value={
-                            editLocation
-                          }
-                          onChangeText={
-                            setEditLocation
-                          }
-                          placeholder="e.g. Main Gymnasium"
-                          placeholderTextColor={
-                            COLORS.textSecondary
-                          }
-                          style={
-                            styles.input
-                          }
+                        <ActionButton
+                          icon="create-outline"
+                          label="Edit"
+                          onPress={() => handleEditEvent(event)}
                         />
-
-                        <Text
-                          style={
-                            styles.inputLabel
-                          }
-                        >
-                          Start Time
-                        </Text>
-
-                        <TextInput
-                          value={
-                            editStart
-                          }
-                          onChangeText={
-                            setEditStart
-                          }
-                          placeholder="YYYY-MM-DD HH:MM"
-                          placeholderTextColor={
-                            COLORS.textSecondary
-                          }
-                          style={
-                            styles.input
-                          }
-                        />
-
-                        <Text
-                          style={
-                            styles.inputHint
-                          }
-                        >
-                          Example:
-                          2026-10-12 08:00
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.inputLabel
-                          }
-                        >
-                          End Time
-                        </Text>
-
-                        <TextInput
-                          value={editEnd}
-                          onChangeText={
-                            setEditEnd
-                          }
-                          placeholder="YYYY-MM-DD HH:MM"
-                          placeholderTextColor={
-                            COLORS.textSecondary
-                          }
-                          style={
-                            styles.input
-                          }
-                        />
-
-                        <Text
-                          style={
-                            styles.inputHint
-                          }
-                        >
-                          Example:
-                          2026-10-12 10:00
-                        </Text>
-
                         <Pressable
-                          onPress={
-                            handleSaveEdit
-                          }
-                          disabled={
-                            savingEdit
-                          }
-                          style={[
-                            styles.saveButton,
-                            savingEdit &&
-                              styles.disabledButton,
-                          ]}
+                          disabled={deletingEventId === event.eventId}
+                          style={[styles.iconAction, styles.deleteAction]}
+                          onPress={() => handleDeleteEvent(event)}
                         >
-                          <Text
-                            style={
-                              styles.saveButtonText
-                            }
-                          >
-                            {savingEdit
-                              ? 'Saving...'
-                              : 'Save Changes'}
-                          </Text>
+                          {deletingEventId === event.eventId ? (
+                            <ActivityIndicator
+                              size="small"
+                              color={COLORS.danger}
+                            />
+                          ) : (
+                            <Ionicons
+                              name="trash-outline"
+                              size={17}
+                              color={COLORS.danger}
+                            />
+                          )}
                         </Pressable>
                       </View>
-                    )}
-
-                    {/* ==================================================
-                        ATTENDANCE LIST
-                        ================================================== */}
-
-                    <View
-                      style={
-                        styles.attendanceSection
-                      }
-                    >
-                      <View
-                        style={
-                          styles.attendanceSectionHeader
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.attendanceSectionTitle
-                          }
-                        >
-                          Students Attended
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.alphabetical
-                          }
-                        >
-                          A–Z
-                        </Text>
-                      </View>
-
-                      {sortedAttendees.length ===
-                      0 ? (
-                        <Text
-                          style={
-                            styles.noStudents
-                          }
-                        >
-                          No students have attended
-                          this event yet.
-                        </Text>
-                      ) : (
-                        sortedAttendees.map(
-                          (
-                            attendee,
-                            index
-                          ) => (
-                            <View
-                              key={`${event.eventId}-${attendee.studentId}`}
-                              style={
-                                styles.studentRow
-                              }
-                            >
-                              <View
-                                style={
-                                  styles.numberCircle
-                                }
-                              >
-                                <Text
-                                  style={
-                                    styles.numberText
-                                  }
-                                >
-                                  {index + 1}
-                                </Text>
-                              </View>
-
-                              <View
-                                style={
-                                  styles.studentInfo
-                                }
-                              >
-                                <Text
-                                  style={
-                                    styles.studentName
-                                  }
-                                >
-                                  {attendee.studentName ||
-                                    `Student ${attendee.studentId.slice(
-                                      -8
-                                    )}`}
-                                </Text>
-
-                                <Text
-                                  style={
-                                    styles.studentTime
-                                  }
-                                >
-                                  Attended at{' '}
-                                  {formatDate(
-                                    attendee.scannedAt
-                                  )}
-                                </Text>
-                              </View>
-                            </View>
-                          )
-                        )
-                      )}
                     </View>
+                  );
+                })}
+              </View>
+            ))
+          )}
+        </ScrollView>
+
+        <Modal
+          visible={!!attendeeEvent}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAttendeeEvent(null)}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.modalCard}>
+              <ModalHeader
+                title="Attendees"
+                subtitle={attendeeEvent?.title ?? ''}
+                onClose={() => setAttendeeEvent(null)}
+              />
+
+              <Text style={styles.cardTitle}>
+                {attendeeEvent?.attendeeCount ?? 0} attendee(s)
+              </Text>
+
+              <ScrollView style={styles.attendeeScroll}>
+                {attendeeEvent?.attendees.length ? (
+                  [...attendeeEvent.attendees]
+                    .sort((a, b) =>
+                      (a.studentName || a.studentId).localeCompare(
+                        b.studentName || b.studentId
+                      )
+                    )
+                    .map((attendee) => (
+                      <View
+                        key={`${attendeeEvent.eventId}-${attendee.studentId}`}
+                        style={styles.attendeeRow}
+                      >
+                        <View style={styles.attendeeIcon}>
+                          <Ionicons
+                            name="person-outline"
+                            size={17}
+                            color={COLORS.primary}
+                          />
+                        </View>
+                        <View style={styles.eventInfo}>
+                          <Text style={styles.eventTitle}>
+                            {attendee.studentName?.trim() ||
+                              `Student ${shortId(attendee.studentId)}`}
+                          </Text>
+                          <Text style={styles.meta}>
+                            {formatDate(attendee.scannedAt)}
+                          </Text>
+                        </View>
+                      </View>
+                    ))
+                ) : (
+                  <Text style={styles.emptyText}>
+                    No students have attended this event yet.
+                  </Text>
+                )}
+              </ScrollView>
+
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setAttendeeEvent(null)}
+              >
+                <Text style={styles.buttonText}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={!!qrEvent}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setQrEvent(null)}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.modalCard}>
+              <ModalHeader
+                title="Event QR Code"
+                subtitle={qrEvent?.title ?? ''}
+                onClose={() => setQrEvent(null)}
+              />
+
+              <Text style={styles.modalDescription}>
+                Scan this code to record attendance.
+              </Text>
+
+              {qrEvent && (
+                <View style={styles.qrWrap}>
+                  <QRCode
+                    value={buildQRPayload({
+                      eventId: qrEvent.eventCode,
+                      title: qrEvent.title,
+                      start: qrEvent.startTime ?? undefined,
+                      end: qrEvent.endTime ?? undefined,
+                    })}
+                    size={180}
+                    backgroundColor="#FFFFFF"
+                  />
+                  <Text style={styles.eventTitle}>{qrEvent.eventCode}</Text>
+                </View>
+              )}
+
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setQrEvent(null)}
+              >
+                <Text style={styles.buttonText}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={!!editingEvent}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            if (!savingEvent) {
+              setEditingEvent(null);
+              setActiveEditPicker(null);
+            }
+          }}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.modalCard}>
+              <ModalHeader
+                title="Edit Event"
+                subtitle={editingEvent?.eventCode ?? ''}
+                onClose={() => {
+                  if (!savingEvent) {
+                    setEditingEvent(null);
+                    setActiveEditPicker(null);
+                  }
+                }}
+              />
+
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                <Text style={styles.inputLabel}>Event title</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editTitle}
+                  onChangeText={setEditTitle}
+                  placeholder="Event title"
+                  placeholderTextColor={COLORS.textSecondary}
+                  editable={!savingEvent}
+                />
+
+                <Text style={styles.inputLabel}>Event location</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editLocation}
+                  onChangeText={setEditLocation}
+                  placeholder="Enter event location"
+                  placeholderTextColor={COLORS.textSecondary}
+                  editable={!savingEvent}
+                />
+
+                <Text style={styles.inputLabel}>Event description</Text>
+                <TextInput
+                  style={[styles.input, styles.multilineInput]}
+                  value={editDescription}
+                  onChangeText={setEditDescription}
+                  placeholder="Describe what this event is about"
+                  placeholderTextColor={COLORS.textSecondary}
+                  multiline
+                  textAlignVertical="top"
+                  editable={!savingEvent}
+                />
+
+                <Text style={styles.inputLabel}>Start date</Text>
+                <Pressable
+                  style={styles.pickerButton}
+                  disabled={savingEvent}
+                  onPress={() =>
+                    setActiveEditPicker((current) =>
+                      current === 'startDate' ? null : 'startDate'
+                    )
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={18}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.pickerButtonText}>
+                    {editStartDate
+                      ? formatPickerDate(editStartDate)
+                      : 'Select start date'}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.textSecondary}
+                  />
+                </Pressable>
+
+                <Text style={styles.inputLabel}>Start time</Text>
+                <Pressable
+                  style={styles.pickerButton}
+                  disabled={savingEvent}
+                  onPress={() =>
+                    setActiveEditPicker((current) =>
+                      current === 'startTime' ? null : 'startTime'
+                    )
+                  }
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={18}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.pickerButtonText}>
+                    {editStartDate
+                      ? formatPickerTime(editStartDate)
+                      : 'Select start time'}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.textSecondary}
+                  />
+                </Pressable>
+
+                <Text style={styles.inputLabel}>End date</Text>
+                <Pressable
+                  style={styles.pickerButton}
+                  disabled={savingEvent}
+                  onPress={() =>
+                    setActiveEditPicker((current) =>
+                      current === 'endDate' ? null : 'endDate'
+                    )
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={18}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.pickerButtonText}>
+                    {editEndDate
+                      ? formatPickerDate(editEndDate)
+                      : 'Select end date'}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.textSecondary}
+                  />
+                </Pressable>
+
+                <Text style={styles.inputLabel}>End time</Text>
+                <Pressable
+                  style={styles.pickerButton}
+                  disabled={savingEvent}
+                  onPress={() =>
+                    setActiveEditPicker((current) =>
+                      current === 'endTime' ? null : 'endTime'
+                    )
+                  }
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={18}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.pickerButtonText}>
+                    {editEndDate
+                      ? formatPickerTime(editEndDate)
+                      : 'Select end time'}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={COLORS.textSecondary}
+                  />
+                </Pressable>
+
+                {activeEditPicker && (
+                  <View style={styles.pickerContainer}>
+                    <DateTimePicker
+                      value={
+                        activeEditPicker === 'startDate' ||
+                        activeEditPicker === 'startTime'
+                          ? editStartDate ?? new Date()
+                          : editEndDate ?? editStartDate ?? new Date()
+                      }
+                      mode={
+                        activeEditPicker === 'startDate' ||
+                        activeEditPicker === 'endDate'
+                          ? 'date'
+                          : 'time'
+                      }
+                      display={
+                        Platform.OS === 'ios' ? 'spinner' : 'default'
+                      }
+                      onChange={handleEditPickerChange}
+                      themeVariant="light"
+                    />
+
+                    {Platform.OS === 'ios' && (
+                      <Pressable
+                        style={styles.primaryButton}
+                        onPress={() => setActiveEditPicker(null)}
+                      >
+                        <Text style={styles.buttonText}>Done</Text>
+                      </Pressable>
+                    )}
                   </View>
                 )}
-              </View>
-            );
-          })
-        )}
-      </ScrollView>
+
+                <Text style={styles.inputHint}>
+                  Select a date and time using the buttons above. If the event
+                  does not have a start or end scheduled, leave that value
+                  unselected.
+                </Text>
+
+                <Pressable
+                  style={[
+                    styles.primaryButton,
+                    savingEvent && styles.disabled,
+                  ]}
+                  disabled={savingEvent}
+                  onPress={handleSaveEvent}
+                >
+                  {savingEvent ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.buttonText}>Save Changes</Text>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  style={styles.cancelButton}
+                  disabled={savingEvent}
+                  onPress={() => {
+                    setEditingEvent(null);
+                    setActiveEditPicker(null);
+                  }}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </Pressable>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      </>
     );
   }
 
-  // ============================================================
-  // STUDENT HISTORY
-  // ============================================================
-
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>
-        Attendance History
-      </Text>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.pageHeader}>
+        <View>
+          <Text style={styles.title}>Attendance History</Text>
+          <Text style={styles.subtitle}>Your recorded attendance</Text>
+        </View>
+        <Ionicons name="time-outline" size={27} color={COLORS.primary} />
+      </View>
+
+      <View style={styles.studentSummary}>
+        <Ionicons
+          name="checkmark-circle-outline"
+          size={22}
+          color={COLORS.primary}
+        />
+        <View>
+          <Text style={styles.summaryValue}>{studentRecords.length}</Text>
+          <Text style={styles.summaryLabel}>Attendance records</Text>
+        </View>
+      </View>
 
       {studentRecords.length === 0 ? (
-        <Text
-          style={
-            styles.emptyStudentText
-          }
-        >
-          No records yet. Scan a QR code to
-          register your attendance.
-        </Text>
+        <Empty
+          icon="time-outline"
+          title="No Records Yet"
+          message="Scan an event QR code to register your attendance."
+        />
       ) : (
-        <ScrollView
-          contentContainerStyle={
-            styles.content
-          }
-          showsVerticalScrollIndicator={
-            false
-          }
-        >
-          {studentRecords.map((item) => (
-            <View
-              key={String(item.id)}
-              style={
-                styles.studentHistoryCard
-              }
-            >
-              <Text
-                style={styles.eventTitle}
-              >
-                {item.eventTitle}
-              </Text>
-
-              <Text
-                style={styles.eventMeta}
-              >
-                Event Code: {item.eventId}
-              </Text>
-
-              <Text
-                style={styles.eventMeta}
-              >
-                Attended:{' '}
-                {formatDate(
-                  item.scannedAt
-                )}
-              </Text>
+        studentRecords.map((record) => (
+          <View key={String(record.id)} style={styles.studentCard}>
+            <View style={styles.eventIcon}>
+              <Ionicons
+                name="checkmark-circle-outline"
+                size={21}
+                color={COLORS.primary}
+              />
             </View>
-          ))}
-        </ScrollView>
+            <View style={styles.eventInfo}>
+              <Text style={styles.eventTitle} numberOfLines={2}>
+                {record.eventTitle}
+              </Text>
+              <Text style={styles.meta}>Code: {record.eventId}</Text>
+              <Text style={styles.meta}>{formatDate(record.scannedAt)}</Text>
+            </View>
+          </View>
+        ))
       )}
+    </ScrollView>
+  );
+}
+
+function ActionButton({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.iconAction} onPress={onPress}>
+      <Ionicons name={icon} size={17} color={COLORS.primary} />
+      <Text style={styles.actionLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function Empty({
+  icon,
+  title,
+  message,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  message: string;
+}) {
+  return (
+    <View style={styles.emptyCard}>
+      <Ionicons name={icon} size={30} color={COLORS.primary} />
+      <Text style={styles.eventTitle}>{title}</Text>
+      <Text style={styles.emptyText}>{message}</Text>
     </View>
   );
 }
 
-// ============================================================
-// EVENT STATUS
-// ============================================================
+function ModalHeader({
+  title,
+  subtitle,
+  onClose,
+}: {
+  title: string;
+  subtitle: string;
+  onClose: () => void;
+}) {
+  return (
+    <View style={styles.modalHeader}>
+      <View style={styles.eventInfo}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        <Text style={styles.meta}>{subtitle}</Text>
+      </View>
+      <Pressable onPress={onClose} style={styles.closeButton}>
+        <Ionicons name="close" size={21} color={COLORS.textPrimary} />
+      </Pressable>
+    </View>
+  );
+}
+
+function parseDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function combineDateAndTime(datePart: Date, timePart: Date): Date {
+  const result = new Date(datePart);
+  result.setHours(
+    timePart.getHours(),
+    timePart.getMinutes(),
+    timePart.getSeconds(),
+    0
+  );
+  return result;
+}
+
+function formatPickerDate(date: Date): string {
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+function formatPickerTime(date: Date): string {
+  return date.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 function getEventStatus(
-  startTime: string | null,
-  endTime: string | null
-): EventStatus {
+  start: string | null,
+  end: string | null
+): 'Upcoming' | 'Ongoing' | 'Ended' {
   const now = new Date();
 
-  if (!startTime) {
-    return 'Upcoming';
-  }
-
-  const start = new Date(
-    startTime
-  );
-
-  if (now < start) {
-    return 'Upcoming';
-  }
-
-  if (endTime) {
-    const end = new Date(
-      endTime
-    );
-
-    if (now <= end) {
-      return 'Ongoing';
-    }
-  }
+  if (!start || now < new Date(start)) return 'Upcoming';
+  if (end && now <= new Date(end)) return 'Ongoing';
 
   return 'Ended';
 }
 
-// ============================================================
-// DATE FORMATTERS
-// ============================================================
-
-function formatDate(
-  iso: string
-) {
-  return new Date(
-    iso
-  ).toLocaleString();
+function formatDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function formatDateForInput(
-  iso: string
-) {
-  const date = new Date(iso);
-
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-  ) {
-    return '';
-  }
-
-  const year =
-    date.getFullYear();
-
-  const month = String(
-    date.getMonth() + 1
-  ).padStart(2, '0');
-
-  const day = String(
-    date.getDate()
-  ).padStart(2, '0');
-
-  const hours = String(
-    date.getHours()
-  ).padStart(2, '0');
-
-  const minutes = String(
-    date.getMinutes()
-  ).padStart(2, '0');
-
-  return `${year}-${month}-${day} ${hours}:${minutes}`;
+function dateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-// ============================================================
-// STYLES
-// ============================================================
+function getDateKey(value: string | null): string | null {
+  if (!value) return null;
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : dateKey(date);
+}
+
+function dateFromKey(key: string): Date {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+function readableDate(key: string): string {
+  return dateFromKey(key).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function shortId(id: string): string {
+  return id.length > 8 ? id.slice(-8) : id;
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor:
-      COLORS.background,
-    paddingHorizontal: 24,
-    paddingTop: 24,
+    backgroundColor: COLORS.background,
   },
-
   content: {
-    paddingBottom: 40,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
   },
-
   center: {
     flex: 1,
-    backgroundColor:
-      COLORS.background,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    backgroundColor: COLORS.background,
   },
-
-  loadingText: {
-    color:
-      COLORS.textSecondary,
-    marginTop: 10,
-    fontSize: 14,
-  },
-
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-    color:
-      COLORS.textPrimary,
-    marginBottom: 8,
-  },
-
-  subtitle: {
-    fontSize: 14,
-    color:
-      COLORS.textSecondary,
-    lineHeight: 20,
-    marginBottom: 18,
-  },
-
-  emptyText: {
-    fontSize: 14,
-    color:
-      COLORS.textSecondary,
-    textAlign: 'center',
-    marginTop: 30,
-    lineHeight: 20,
-  },
-
-  emptyStudentText: {
-    fontSize: 14,
-    color:
-      COLORS.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 32,
-    paddingHorizontal: 20,
-  },
-
-  // ============================================================
-  // EVENT CARD
-  // ============================================================
-
-  historyCard: {
-    backgroundColor:
-      COLORS.card,
-    borderWidth: 1,
-    borderColor:
-      COLORS.border,
-    borderRadius: 14,
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-
-  historyHeader: {
+  pageHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 14,
+    justifyContent: 'space-between',
+    marginBottom: 15,
   },
-
-  pressed: {
-    opacity: 0.7,
+  title: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
   },
-
-  historyIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor:
-      COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-
-  historyBody: {
-    flex: 1,
-  },
-
-  historyTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-  },
-
-  historyMeta: {
+  subtitle: {
     fontSize: 12,
-    color:
-      COLORS.textSecondary,
+    color: COLORS.textSecondary,
     marginTop: 4,
   },
-
-  // ============================================================
-  // COUNT + STATUS
-  // ============================================================
-
-  countContainer: {
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-
-  countBadge: {
-    minWidth: 62,
-    paddingVertical: 7,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    backgroundColor:
-      COLORS.surface,
-    alignItems: 'center',
-  },
-
-  countValue: {
-    fontSize: 18,
-    fontWeight: '800',
-    color:
-      COLORS.primary,
-  },
-
-  countLabel: {
-    fontSize: 9,
-    color:
-      COLORS.textSecondary,
-    marginTop: 1,
-  },
-
-  statusBadge: {
-    marginTop: 5,
-    minWidth: 62,
-    paddingVertical: 4,
-    paddingHorizontal: 7,
-    borderRadius: 999,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  statusUpcoming: {
-    backgroundColor: COLORS.primary + '33', // 20% opacity
-  },
-
-  statusOngoing: {
-    backgroundColor:
-      '#ECFDF5',
-  },
-
-  statusEnded: {
-    backgroundColor:
-      '#F3F4F6',
-  },
-
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 4,
-  },
-
-  statusDotUpcoming: {
-    backgroundColor: COLORS.warning,
-  },
-
-  statusDotOngoing: {
-    backgroundColor:
-      '#16A34A',
-  },
-
-  statusDotEnded: {
-    backgroundColor:
-      '#6B7280',
-  },
-
-  statusText: {
-    fontSize: 9,
-    fontWeight: '700',
-  },
-
-  statusTextUpcoming: {
-    color: COLORS.warning,
-  },
-
-  statusTextOngoing: {
-    color: '#16A34A',
-  },
-
-  statusTextEnded: {
-    color: '#6B7280',
-  },
-
-  // ============================================================
-  // EXPANDED SECTION
-  // ============================================================
-
-  expandedSection: {
-    borderTopWidth: 1,
-    borderTopColor:
-      COLORS.border,
-  },
-
-  // ============================================================
-  // EVENT DETAILS
-  // ============================================================
-
-  detailsSection: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor:
-      COLORS.border,
-  },
-
-  detailsTitle: {
+  sectionTitle: {
     fontSize: 16,
-    fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-    marginBottom: 12,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
   },
-
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-
-  detailContent: {
-    flex: 1,
-    marginLeft: 10,
-  },
-
-  detailLabel: {
+  muted: {
     fontSize: 11,
-    fontWeight: '600',
-    color:
-      COLORS.textSecondary,
-    marginBottom: 2,
+    color: COLORS.textSecondary,
   },
-
-  detailValue: {
-    fontSize: 13,
-    color:
-      COLORS.textPrimary,
-  },
-
-  // ============================================================
-  // QR
-  // ============================================================
-
-  qrSection: {
-    alignItems: 'center',
-    padding: 18,
-  },
-
-  qrTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-    marginBottom: 5,
-  },
-
-  qrDescription: {
-    fontSize: 12,
-    lineHeight: 18,
-    color:
-      COLORS.textSecondary,
-    textAlign: 'center',
-    marginBottom: 14,
-    maxWidth: 300,
-  },
-
-  qrContainer: {
-    backgroundColor:
-      '#FFFFFF',
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor:
-      '#E5E7EB',
-  },
-
-  qrCodeText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-    marginTop: 10,
-    letterSpacing: 1,
-  },
-
-  // ============================================================
-  // BUTTONS
-  // ============================================================
-
-  manageRow: {
+  summaryRow: {
     flexDirection: 'row',
-    paddingHorizontal: 14,
-    paddingBottom: 14,
+    gap: 10,
+    marginBottom: 14,
+  },
+  summaryCard: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+  },
+  summaryValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  summaryLabel: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  filterCard: {
+    padding: 12,
+    marginBottom: 18,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+  },
+  filterHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 9,
+  },
+  cardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
   },
-
-  editButton: {
+  dateButton: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor:
-      COLORS.primary,
+    minHeight: 40,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 9,
   },
-
-  deleteButton: {
+  dateText: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor:
-      '#dc2626',
+    fontSize: 12,
+    color: COLORS.textPrimary,
+  },
+  clearButton: {
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+  },
+  link: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  listHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
-
-  actionButtonText: {
-    color: '#fff',
+  groupTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginTop: 8,
+    marginBottom: 7,
+  },
+  eventCard: {
+    marginBottom: 10,
+    padding: 12,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+  },
+  eventMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  eventIcon: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 10,
+  },
+  eventInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  eventTitle: {
     fontSize: 13,
     fontWeight: '700',
-    marginLeft: 6,
+    color: COLORS.textPrimary,
+    marginBottom: 3,
   },
-
-  buttonPressed: {
-    opacity: 0.7,
+  meta: {
+    fontSize: 10,
+    color: COLORS.textSecondary,
+    marginTop: 3,
+    lineHeight: 15,
   },
-
-  disabledButton: {
-    opacity: 0.5,
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 5,
+    marginTop: 3,
   },
-
-  // ============================================================
-  // EDIT BOX
-  // ============================================================
-
-  editBox: {
-    margin: 14,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor:
-      COLORS.surface,
-    borderWidth: 1,
-    borderColor:
-      COLORS.border,
+  metaDetail: {
+    flex: 1,
+    fontSize: 10,
+    color: COLORS.textSecondary,
+    lineHeight: 15,
   },
-
-  editTitle: {
-    fontSize: 16,
+  descriptionContainer: {
+    marginTop: 8,
+    padding: 8,
+    backgroundColor: COLORS.background,
+    borderRadius: 8,
+  },
+  descriptionLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    marginBottom: 3,
+  },
+  descriptionText: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    lineHeight: 16,
+  },
+  eventStats: {
+    minWidth: 62,
+    alignItems: 'flex-end',
+  },
+  attendeeCount: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  tinyLabel: {
+    fontSize: 9,
+    color: COLORS.textSecondary,
+  },
+  status: {
+    fontSize: 9,
     fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-    marginBottom: 12,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginTop: 6,
   },
-
+  upcoming: {
+    color: '#92400E',
+    backgroundColor: '#FFF4D6',
+  },
+  ongoing: {
+    color: '#166534',
+    backgroundColor: '#DCFCE7',
+  },
+  ended: {
+    color: '#4B5563',
+    backgroundColor: '#F3F4F6',
+  },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingTop: 9,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  iconAction: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 35,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 5,
+    backgroundColor: COLORS.surface,
+    borderRadius: 8,
+  },
+  actionLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  deleteAction: {
+    flex: 0,
+    width: 36,
+    backgroundColor: '#FDECEC',
+  },
+  disabled: {
+    opacity: 0.6,
+  },
+  emptyCard: {
+    alignItems: 'center',
+    gap: 8,
+    padding: 22,
+    marginTop: 8,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  emptyText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  studentSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 13,
+    marginBottom: 14,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+  },
+  studentCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    marginBottom: 9,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '85%',
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: COLORS.card,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 14,
+  },
+  closeButton: {
+    padding: 7,
+    borderRadius: 8,
+    backgroundColor: COLORS.surface,
+  },
+  attendeeScroll: {
+    maxHeight: 330,
+    marginVertical: 8,
+  },
+  attendeeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  attendeeIcon: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.surface,
+    borderRadius: 9,
+  },
+  qrWrap: {
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    alignSelf: 'center',
+    marginVertical: 14,
+  },
+  modalDescription: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  primaryButton: {
+    minHeight: 43,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.primary,
+    borderRadius: 9,
+    marginTop: 12,
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   inputLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color:
-      COLORS.textSecondary,
+    color: COLORS.textPrimary,
     marginBottom: 6,
-    marginTop: 8,
   },
-
   input: {
-    minHeight: 46,
+    minHeight: 42,
     borderWidth: 1,
-    borderColor:
-      COLORS.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    color:
-      COLORS.textPrimary,
-    backgroundColor:
-      COLORS.card,
-    fontSize: 14,
-  },
-
-  inputHint: {
-    fontSize: 10,
-    color:
-      COLORS.textSecondary,
-    marginTop: 4,
-  },
-
-  saveButton: {
-    height: 46,
-    borderRadius: 10,
-    backgroundColor:
-      COLORS.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 16,
-  },
-
-  saveButtonText: {
-    color:
-      COLORS.textOnPrimary,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  // ============================================================
-  // ATTENDANCE
-  // ============================================================
-
-  attendanceSection: {
-    paddingHorizontal: 14,
-    paddingBottom: 8,
-  },
-
-  attendanceSectionHeader: {
-    flexDirection: 'row',
-    justifyContent:
-      'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-
-  attendanceSectionTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color:
-      COLORS.textPrimary,
-  },
-
-  alphabetical: {
-    fontSize: 11,
-    fontWeight: '700',
-    color:
-      COLORS.primary,
-  },
-
-  noStudents: {
-    fontSize: 13,
-    color:
-      COLORS.textSecondary,
-    paddingVertical: 12,
-  },
-
-  studentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor:
-      COLORS.border,
-  },
-
-  numberCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor:
-      COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-
-  numberText: {
+    borderColor: COLORS.border,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    marginBottom: 12,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.background,
     fontSize: 12,
-    fontWeight: '700',
-    color:
-      COLORS.textSecondary,
   },
-
-  studentInfo: {
-    flex: 1,
+  multilineInput: {
+    minHeight: 90,
+    paddingTop: 10,
+    textAlignVertical: 'top',
   },
-
-  studentName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color:
-      COLORS.textPrimary,
-  },
-
-  studentTime: {
-    fontSize: 11,
-    color:
-      COLORS.textSecondary,
-    marginTop: 3,
-  },
-
-  // ============================================================
-  // STUDENT HISTORY
-  // ============================================================
-
-  studentHistoryCard: {
-    backgroundColor:
-      COLORS.card,
-    borderRadius: 14,
-    padding: 16,
+  pickerButton: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 11,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor:
-      COLORS.border,
+    borderColor: COLORS.border,
+    borderRadius: 9,
+    backgroundColor: COLORS.background,
   },
-
-  eventTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color:
-      COLORS.textPrimary,
-    marginBottom: 5,
+  pickerButtonText: {
+    flex: 1,
+    fontSize: 12,
+    color: COLORS.textPrimary,
   },
-
-  eventMeta: {
-    fontSize: 13,
-    color:
-      COLORS.textSecondary,
-    marginTop: 3,
+  pickerContainer: {
+    padding: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 9,
+    backgroundColor: COLORS.background,
+  },
+  inputHint: {
+    fontSize: 10,
+    color: COLORS.textSecondary,
+    lineHeight: 15,
+    marginBottom: 8,
+  },
+  cancelButton: {
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    marginTop: 7,
+    backgroundColor: COLORS.surface,
+  },
+  cancelButtonText: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

@@ -1,3 +1,4 @@
+
 import Ionicons from '@expo/vector-icons/Ionicons';
 import DateTimePicker, {
   type DateTimePickerEvent,
@@ -22,18 +23,11 @@ import { createEvent } from '@/lib/events';
 import { getProfile, type Role } from '@/lib/profiles';
 import { buildQRPayload } from '@/lib/qr';
 
-function toLocalISO(date: Date) {
-  const pad = (n: number) => String(n).padStart(2, '0');
-
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-      date.getDate()
-    )}` +
-    `T${pad(date.getHours())}:${pad(date.getMinutes())}:00`
-  );
+function toLocalISO(date: Date): string {
+  return date.toISOString();
 }
 
-function formatDateTime(date: Date) {
+function formatDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
 
   const month = date.toLocaleString('en-US', {
@@ -62,10 +56,9 @@ export default function TeacherScreen() {
   const [title, setTitle] = useState('');
   const [eventId, setEventId] = useState('');
   const [location, setLocation] = useState('');
+  const [description, setDescription] = useState('');
 
-  const [startDate, setStartDate] = useState(
-    () => new Date()
-  );
+  const [startDate, setStartDate] = useState(() => new Date());
 
   const [endDate, setEndDate] = useState(
     () => new Date(Date.now() + 60 * 60 * 1000)
@@ -77,17 +70,26 @@ export default function TeacherScreen() {
   const [editingPart, setEditingPart] =
     useState<'date' | 'time'>('date');
 
-  const [payload, setPayload] =
-    useState<string | null>(null);
+  const [payload, setPayload] = useState<string | null>(null);
 
-  const [message, setMessage] =
-    useState<string | null>(null);
+  const [createdEvent, setCreatedEvent] = useState<{
+    eventId: string;
+    title: string;
+    location: string;
+    description: string;
+    start: string;
+    end: string;
+  } | null>(null);
+
+  const [message, setMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
 
       if (!user) {
+        setRole(null);
         setRoleLoading(false);
 
         return () => {
@@ -95,48 +97,26 @@ export default function TeacherScreen() {
         };
       }
 
-      getProfile(user.id).then((profile) => {
-        if (!active) return;
+      setRoleLoading(true);
 
-        setRole(profile?.role ?? 'student');
-        setRoleLoading(false);
-      });
+      getProfile(user.id)
+        .then((profile) => {
+          if (!active) return;
+          setRole(profile?.role ?? 'student');
+        })
+        .catch(() => {
+          if (!active) return;
+          setRole('student');
+        })
+        .finally(() => {
+          if (active) setRoleLoading(false);
+        });
 
       return () => {
         active = false;
       };
     }, [user])
   );
-
-  if (roleLoading) {
-    return (
-      <View style={styles.lockContainer}>
-        <Text style={styles.lockTitle}>
-          Checking your account...
-        </Text>
-      </View>
-    );
-  }
-
-  if (role !== 'teacher' && role !== 'admin') {
-    return (
-      <View style={styles.lockContainer}>
-        <Ionicons
-          name="lock-closed-outline"
-          size={48}
-          color={COLORS.primary}
-        />
-
-        <Text style={styles.lockTitle}>
-          Teachers and Admins Only
-        </Text>
-
-        <Text style={styles.lockSubtitle}>
-          Only teacher and admin accounts can create events.
-        </Text>
-      </View>
-    );
-  }
 
   const isAndroid = Platform.OS === 'android';
 
@@ -159,9 +139,7 @@ export default function TeacherScreen() {
     }
 
     const current =
-      editTarget === 'start'
-        ? startDate
-        : endDate;
+      editTarget === 'start' ? startDate : endDate;
 
     const next = new Date(current);
 
@@ -184,10 +162,7 @@ export default function TeacherScreen() {
       setEndDate(next);
     }
 
-    if (
-      isAndroid &&
-      editingPart === 'date'
-    ) {
+    if (isAndroid && editingPart === 'date') {
       setEditingPart('time');
     } else {
       setEditTarget(null);
@@ -197,134 +172,206 @@ export default function TeacherScreen() {
 
   const handleQuickEnd = (ms: number) => {
     setMessage(null);
-
-    setEndDate(
-      new Date(startDate.getTime() + ms)
-    );
+    setEndDate(new Date(startDate.getTime() + ms));
   };
 
-  const handleCreateEvent = () => {
-    const eventData = {
-      eventId: eventId.trim(),
-      title: title.trim(),
-      location: location.trim(),
-      start: toLocalISO(startDate),
-      end: toLocalISO(endDate),
-    };
+  const handleCreateEvent = async () => {
+    if (saving) return;
+
+    setMessage(null);
+    setPayload(null);
+    setCreatedEvent(null);
+
+    // Preserve the code entered by the teacher.
+    const trimmedEventId = eventId.trim().toUpperCase();
+    const trimmedTitle = title.trim();
+    const trimmedLocation = location.trim();
+    const trimmedDescription = description.trim();
+
+    if (!trimmedEventId || !trimmedTitle) {
+      setMessage('Event title and code are required.');
+      return;
+    }
+
+    if (!trimmedLocation) {
+      setMessage('Please enter the event location.');
+      return;
+    }
+
+    if (!trimmedDescription) {
+      setMessage('Please enter a description of the event.');
+      return;
+    }
 
     if (
-      !eventData.eventId ||
-      !eventData.title
+      !Number.isFinite(startDate.getTime()) ||
+      !Number.isFinite(endDate.getTime())
     ) {
-      setMessage(
-        'Event title and code are required.'
-      );
+      setMessage('Please select valid start and end times.');
       return;
     }
 
-    if (!eventData.location) {
-      setMessage(
-        'Please enter the event location.'
-      );
+    if (endDate.getTime() <= startDate.getTime()) {
+      setMessage('End time must be after start time.');
       return;
     }
 
-    if (
-      endDate.getTime() <=
-      startDate.getTime()
-    ) {
-      setMessage(
-        'End time must be after start time.'
+    setSaving(true);
+
+    try {
+      // The sixth argument is the exact code entered in the form.
+      const { event, error } = await createEvent(
+        trimmedTitle,
+        toLocalISO(startDate),
+        toLocalISO(endDate),
+        trimmedDescription,
+        trimmedLocation,
+        trimmedEventId
       );
-      return;
-    }
 
-    createEvent(eventData).then(
-      ({ error }) => {
-        if (error) {
-          setMessage(
-            'Could not save the event. Please try again.'
-          );
-          return;
-        }
-
+      if (error || !event) {
         setMessage(
-          'Event saved! Scan the QR with the Scan tab to test it.'
+          error ?? 'Could not save the event. Please try again.'
         );
-
-        setPayload(
-          buildQRPayload(eventData)
-        );
+        return;
       }
-    );
+
+      const eventData = {
+        eventId: event.event_code,
+        title: event.title,
+        location: event.location ?? trimmedLocation,
+        description: event.description ?? trimmedDescription,
+        start: event.start_time ?? toLocalISO(startDate),
+        end: event.end_time ?? toLocalISO(endDate),
+      };
+
+      setCreatedEvent(eventData);
+      setMessage(
+        'Event saved successfully! Your event QR code is ready.'
+      );
+
+      setPayload(
+        buildQRPayload({
+          eventId: eventData.eventId,
+          title: eventData.title,
+          start: eventData.start,
+          end: eventData.end,
+        })
+      );
+    } catch (error) {
+      console.error('handleCreateEvent failed:', error);
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not save the event. Please check your connection and try again.'
+      );
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (roleLoading) {
+    return (
+      <View style={styles.lockContainer}>
+        <Text style={styles.lockTitle}>
+          Checking your account...
+        </Text>
+      </View>
+    );
+  }
+
+  if (!user || (role !== 'teacher' && role !== 'admin')) {
+    return (
+      <View style={styles.lockContainer}>
+        <Ionicons
+          name="lock-closed-outline"
+          size={48}
+          color={COLORS.primary}
+        />
+
+        <Text style={styles.lockTitle}>
+          Teachers and Admins Only
+        </Text>
+
+        <Text style={styles.lockSubtitle}>
+          Only teacher and admin accounts can create events.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.title}>
-        Create Event QR
-      </Text>
+      <Text style={styles.title}>Create Event QR</Text>
 
       <Text style={styles.subtitle}>
-        Fill in the event details, then scan the
-        generated QR with the Scan tab.
+        Fill in the event details, then generate a QR code for attendance.
       </Text>
 
-      {/* Event Title */}
-      <Text style={styles.label}>
-        Event Title
-      </Text>
+      <Text style={styles.label}>Event Title</Text>
 
       <TextInput
         style={styles.input}
         value={title}
         onChangeText={setTitle}
         placeholder="e.g. Founders Day Assembly"
-        placeholderTextColor={
-          COLORS.textSecondary
-        }
+        placeholderTextColor={COLORS.textSecondary}
+        editable={!saving}
       />
 
-      {/* Event Code */}
-      <Text style={styles.label}>
-        Event Code
-      </Text>
+      <Text style={styles.label}>Event Code</Text>
 
       <TextInput
         style={styles.input}
         value={eventId}
         onChangeText={setEventId}
         placeholder="e.g. EVT-2026-0002"
-        placeholderTextColor={
-          COLORS.textSecondary
-        }
+        placeholderTextColor={COLORS.textSecondary}
         autoCapitalize="characters"
+        editable={!saving}
       />
 
-      {/* Location */}
-      <Text style={styles.label}>
-        Location
-      </Text>
+      <Text style={styles.label}>Location</Text>
 
       <TextInput
         style={styles.input}
         value={location}
         onChangeText={setLocation}
         placeholder="e.g. Room 204, Main Gymnasium"
-        placeholderTextColor={
-          COLORS.textSecondary
-        }
+        placeholderTextColor={COLORS.textSecondary}
         autoCapitalize="words"
+        editable={!saving}
       />
 
-      {/* Starts */}
-      <Text style={styles.label}>
-        Starts
+      <Text style={styles.label}>Event Description</Text>
+
+      <Text style={styles.fieldHint}>
+        Explain what the event is about, its purpose, and what participants can expect.
       </Text>
+
+      <TextInput
+        style={[styles.input, styles.descriptionInput]}
+        value={description}
+        onChangeText={setDescription}
+        placeholder="Describe the purpose and activities of this event..."
+        placeholderTextColor={COLORS.textSecondary}
+        multiline
+        textAlignVertical="top"
+        maxLength={1000}
+        editable={!saving}
+      />
+
+      <Text style={styles.characterCount}>
+        {description.length}/1000 characters
+      </Text>
+
+      <Text style={styles.label}>Starts</Text>
 
       <PickerField
         value={formatDateTime(startDate)}
@@ -332,10 +379,7 @@ export default function TeacherScreen() {
         onPress={() => openPicker('start')}
       />
 
-      {/* Ends */}
-      <Text style={styles.label}>
-        Ends
-      </Text>
+      <Text style={styles.label}>Ends</Text>
 
       <PickerField
         value={formatDateTime(endDate)}
@@ -343,15 +387,16 @@ export default function TeacherScreen() {
         onPress={() => openPicker('end')}
       />
 
-      {/* Quick End Options */}
       <View style={styles.chipRow}>
         {QUICK_END_OPTIONS.map((option) => (
           <Pressable
             key={option.label}
-            style={styles.chip}
-            onPress={() =>
-              handleQuickEnd(option.ms)
-            }
+            disabled={saving}
+            style={({ pressed }) => [
+              styles.chip,
+              pressed && styles.chipPressed,
+            ]}
+            onPress={() => handleQuickEnd(option.ms)}
           >
             <Text style={styles.chipText}>
               {option.label}
@@ -361,108 +406,84 @@ export default function TeacherScreen() {
       </View>
 
       <Text style={styles.hint}>
-        Tap a chip to set the end time from start.
+        Tap a chip to set the end time relative to the start time.
       </Text>
 
       {message && (
-        <Text style={styles.message}>
-          {message}
-        </Text>
+        <Text style={styles.message}>{message}</Text>
       )}
 
-      {/* Create Event */}
       <AppButton
         theme="primary"
-        title="Create Event"
+        title={saving ? 'Saving Event...' : 'Create Event'}
         icon="add-circle-outline"
         onPress={handleCreateEvent}
       />
 
-      {/* Date / Time Picker */}
       {editTarget && (
         <View style={styles.pickerContainer}>
           <DateTimePicker
-            value={
-              editTarget === 'start'
-                ? startDate
-                : endDate
-            }
-            mode={
-              isAndroid
-                ? editingPart
-                : 'datetime'
-            }
-            display={
-              isAndroid
-                ? 'default'
-                : 'spinner'
-            }
+            value={editTarget === 'start' ? startDate : endDate}
+            mode={isAndroid ? editingPart : 'datetime'}
+            display={isAndroid ? 'default' : 'spinner'}
             onChange={onPickerChange}
           />
         </View>
       )}
 
-      {/* Generated QR */}
-      {payload && (
+      {payload && createdEvent && (
         <View style={styles.resultCard}>
           <Text style={styles.resultTitle}>
-            Scan this QR code with the Scan tab:
+            Event Created Successfully
+          </Text>
+
+          <Text style={styles.resultSubtitle}>
+            Scan this QR code with the Scan tab to test attendance.
           </Text>
 
           <View style={styles.eventInformation}>
-            <View style={styles.eventInformationRow}>
-              <Ionicons
-                name="location-outline"
-                size={18}
-                color={COLORS.primary}
-              />
+            <InfoRow
+              icon="barcode-outline"
+              label="Code"
+              value={createdEvent.eventId}
+            />
 
-              <Text
-                style={styles.eventInformationText}
-              >
-                {location}
-              </Text>
-            </View>
+            <InfoRow
+              icon="text-outline"
+              label="Title"
+              value={createdEvent.title}
+            />
 
-            <View style={styles.eventInformationRow}>
-              <Ionicons
-                name="calendar-outline"
-                size={18}
-                color={COLORS.primary}
-              />
+            <InfoRow
+              icon="location-outline"
+              label="Location"
+              value={createdEvent.location}
+            />
 
-              <Text
-                style={styles.eventInformationText}
-              >
-                {formatDateTime(startDate)}
-              </Text>
-            </View>
+            <InfoRow
+              icon="document-text-outline"
+              label="Description"
+              value={createdEvent.description}
+            />
 
-            <View style={styles.eventInformationRow}>
-              <Ionicons
-                name="time-outline"
-                size={18}
-                color={COLORS.primary}
-              />
+            <InfoRow
+              icon="calendar-outline"
+              label="Starts"
+              value={formatDateTime(new Date(createdEvent.start))}
+            />
 
-              <Text
-                style={styles.eventInformationText}
-              >
-                Ends {formatDateTime(endDate)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.qrBox}>
-            <QRCode
-              value={payload}
-              size={200}
+            <InfoRow
+              icon="time-outline"
+              label="Ends"
+              value={formatDateTime(new Date(createdEvent.end))}
             />
           </View>
 
-          <Text style={styles.payloadText}>
-            {payload}
-          </Text>
+          <View style={styles.qrBox}>
+            <QRCode value={payload} size={200} />
+          </View>
+
+          <Text style={styles.payloadText}>{payload}</Text>
         </View>
       )}
     </ScrollView>
@@ -484,8 +505,7 @@ function PickerField({
     <Pressable
       style={({ pressed }) => [
         styles.pickerField,
-        pressed &&
-          styles.pickerFieldPressed,
+        pressed && styles.pickerFieldPressed,
       ]}
       onPress={onPress}
     >
@@ -495,9 +515,7 @@ function PickerField({
         color={COLORS.primary}
       />
 
-      <Text style={styles.pickerValue}>
-        {value}
-      </Text>
+      <Text style={styles.pickerValue}>{value}</Text>
 
       <Ionicons
         name="calendar-outline"
@@ -505,6 +523,31 @@ function PickerField({
         color={COLORS.textSecondary}
       />
     </Pressable>
+  );
+}
+
+function InfoRow({
+  icon,
+  label,
+  value,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.eventInformationRow}>
+      <Ionicons
+        name={icon}
+        size={18}
+        color={COLORS.primary}
+      />
+
+      <View style={styles.infoTextContainer}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={styles.eventInformationText}>{value}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -577,6 +620,25 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
   },
 
+  descriptionInput: {
+    minHeight: 120,
+    paddingTop: 12,
+  },
+
+  fieldHint: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+
+  characterCount: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+    textAlign: 'right',
+    marginTop: 5,
+  },
+
   pickerField: {
     backgroundColor: COLORS.card,
     borderRadius: 14,
@@ -602,6 +664,7 @@ const styles = StyleSheet.create({
 
   chipRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     marginTop: 8,
   },
 
@@ -611,6 +674,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 7,
     marginRight: 8,
+    marginBottom: 6,
+  },
+
+  chipPressed: {
+    opacity: 0.7,
   },
 
   chipText: {
@@ -644,20 +712,22 @@ const styles = StyleSheet.create({
     padding: 16,
     marginTop: 20,
     alignItems: 'center',
-    shadowColor: COLORS.shadow,
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
 
   resultTitle: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: COLORS.textPrimary,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+
+  resultSubtitle: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    lineHeight: 19,
     textAlign: 'center',
     marginBottom: 12,
   },
@@ -672,15 +742,26 @@ const styles = StyleSheet.create({
 
   eventInformationRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 4,
+    alignItems: 'flex-start',
+    marginVertical: 6,
+  },
+
+  infoTextContainer: {
+    flex: 1,
+    marginLeft: 8,
+  },
+
+  infoLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginBottom: 2,
   },
 
   eventInformationText: {
-    flex: 1,
     fontSize: 13,
     color: COLORS.textPrimary,
-    marginLeft: 8,
+    lineHeight: 19,
   },
 
   qrBox: {
