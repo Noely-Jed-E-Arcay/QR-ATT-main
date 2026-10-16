@@ -28,8 +28,10 @@ import {
 } from '@/lib/events';
 import { getProfile, type Role } from '@/lib/profiles';
 import { buildQRPayload } from '@/lib/qr';
+import { supabase } from '@/lib/supabase';
 
-type EventFilter = 'All' | 'Upcoming' | 'Ongoing' | 'Completed';
+type StudentEventStatus = 'Present' | 'Absent' | 'Ongoing' | 'Scheduled';
+type EventFilter = 'All' | StudentEventStatus;
 type DateTarget = 'start' | 'end';
 
 const QUICK_END_OPTIONS = [
@@ -54,22 +56,45 @@ function formatDateTime(value: string | Date | null) {
   });
 }
 
+/**
+ * Student status priority:
+ * 1. Attendance exists = Present
+ * 2. Event ended without attendance = Absent
+ * 3. Event is currently happening = Ongoing
+ * 4. Event has not started = Scheduled
+ */
 function getEventStatus(
   event: CloudEvent,
   now: number,
-): EventFilter | 'Unknown' | 'Schedule not set' {
+  attendedEventIds: Set<string>,
+): StudentEventStatus {
+  if (attendedEventIds.has(event.id)) {
+    return 'Present';
+  }
+
   const start = event.start_time
     ? new Date(event.start_time).getTime()
     : null;
+
   const end = event.end_time
     ? new Date(event.end_time).getTime()
     : null;
 
-  if (start !== null && Number.isNaN(start)) return 'Unknown';
-  if (end !== null && Number.isNaN(end)) return 'Unknown';
+  if (start !== null && !Number.isFinite(start)) {
+    return 'Scheduled';
+  }
 
-  if (end !== null && now >= end) return 'Completed';
-  if (start !== null && now < start) return 'Upcoming';
+  if (end !== null && !Number.isFinite(end)) {
+    return 'Scheduled';
+  }
+
+  if (end !== null && now >= end) {
+    return 'Absent';
+  }
+
+  if (start !== null && now < start) {
+    return 'Scheduled';
+  }
 
   if (
     start !== null &&
@@ -79,7 +104,7 @@ function getEventStatus(
     return 'Ongoing';
   }
 
-  return 'Schedule not set';
+  return 'Scheduled';
 }
 
 export default function TeacherScreen() {
@@ -91,9 +116,14 @@ export default function TeacherScreen() {
   const [events, setEvents] = useState<CloudEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(true);
   const [eventError, setEventError] = useState('');
+
   const [filter, setFilter] = useState<EventFilter>('All');
   const [search, setSearch] = useState('');
   const [now, setNow] = useState(Date.now());
+
+  const [attendedEventIds, setAttendedEventIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   const [title, setTitle] = useState('');
   const [eventCode, setEventCode] = useState('');
@@ -103,12 +133,14 @@ export default function TeacherScreen() {
   const [endDate, setEndDate] = useState(
     new Date(Date.now() + 60 * 60 * 1000),
   );
+
   const [dateTarget, setDateTarget] = useState<DateTarget | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'success' | 'error'>(
     'success',
   );
+
   const [createdEvent, setCreatedEvent] = useState<CloudEvent | null>(null);
   const [qrPayload, setQrPayload] = useState<string | null>(null);
 
@@ -116,6 +148,10 @@ export default function TeacherScreen() {
   const isTeacher = role === 'teacher';
   const isAdmin = role === 'admin';
 
+  /**
+   * Load events and the signed-in student's attendance records.
+   * Attendance is matched using the database event ID.
+   */
   const loadEvents = useCallback(async () => {
     setLoadingEvents(true);
     setEventError('');
@@ -123,18 +159,54 @@ export default function TeacherScreen() {
     try {
       const result = await getAvailableEvents();
 
-      setEvents(result.events);
-
       if (result.error) {
         setEventError(result.error);
+        return;
+      }
+
+      setEvents(result.events);
+
+      if (!user) {
+        setAttendedEventIds(new Set());
+        return;
+      }
+
+      if (role === 'student') {
+        const { data: attendanceRows, error: attendanceError } =
+          await supabase
+            .from('attendance')
+            .select('event_id')
+            .eq('student_id', user.id);
+
+        if (attendanceError) {
+          console.error(
+            'Unable to load student attendance:',
+            attendanceError.message,
+          );
+
+          setEventError(
+            'Events loaded, but attendance statuses could not be retrieved. Please refresh.',
+          );
+
+          return;
+        }
+
+        setAttendedEventIds(
+          new Set(
+            (attendanceRows ?? []).map((row) => row.event_id as string),
+          ),
+        );
+      } else {
+        setAttendedEventIds(new Set());
       }
     } catch (error) {
       console.error('Unable to load school events:', error);
+
       setEventError('Unable to load school events. Please try again.');
     } finally {
       setLoadingEvents(false);
     }
-  }, []);
+  }, [user, role]);
 
   useFocusEffect(
     useCallback(() => {
@@ -144,6 +216,7 @@ export default function TeacherScreen() {
         setRole(null);
         setRoleLoading(false);
         setEvents([]);
+        setAttendedEventIds(new Set());
         setLoadingEvents(false);
 
         return () => {
@@ -167,9 +240,12 @@ export default function TeacherScreen() {
           }
         })
         .finally(() => {
-          if (active) setRoleLoading(false);
+          if (active) {
+            setRoleLoading(false);
+          }
         });
 
+      setNow(Date.now());
       void loadEvents();
 
       return () => {
@@ -183,37 +259,49 @@ export default function TeacherScreen() {
 
     return events
       .filter((event) => {
-        const status = getEventStatus(event, now);
+        const status = getEventStatus(
+          event,
+          now,
+          attendedEventIds,
+        );
 
-        if (filter !== 'All' && status !== filter) return false;
+        if (filter !== 'All' && status !== filter) {
+          return false;
+        }
 
-        if (!normalizedSearch) return true;
+        if (!normalizedSearch) {
+          return true;
+        }
 
         return [
           event.title,
           event.event_code,
           event.location ?? '',
           event.description ?? '',
-        ].some((value) => value.toLowerCase().includes(normalizedSearch));
+        ].some((value) =>
+          value.toLowerCase().includes(normalizedSearch),
+        );
       })
       .sort((a, b) => {
         const aTime = a.start_time
           ? new Date(a.start_time).getTime()
           : Number.MAX_SAFE_INTEGER;
+
         const bTime = b.start_time
           ? new Date(b.start_time).getTime()
           : Number.MAX_SAFE_INTEGER;
 
-        const safeATime = Number.isNaN(aTime)
-          ? Number.MAX_SAFE_INTEGER
-          : aTime;
-        const safeBTime = Number.isNaN(bTime)
-          ? Number.MAX_SAFE_INTEGER
-          : bTime;
+        const safeATime = Number.isFinite(aTime)
+          ? aTime
+          : Number.MAX_SAFE_INTEGER;
+
+        const safeBTime = Number.isFinite(bTime)
+          ? bTime
+          : Number.MAX_SAFE_INTEGER;
 
         return safeATime - safeBTime;
       });
-  }, [events, filter, search, now]);
+  }, [events, filter, search, now, attendedEventIds]);
 
   const handleDateChange = (
     event: DateTimePickerEvent,
@@ -276,7 +364,6 @@ export default function TeacherScreen() {
     setSaving(true);
 
     try {
-      // IMPORTANT: createEvent accepts one object and returns a result.
       const result = await createEvent({
         event_code: eventCode.trim().toUpperCase(),
         title: title.trim(),
@@ -316,6 +403,7 @@ export default function TeacherScreen() {
       await loadEvents();
     } catch (error) {
       console.error('Unable to create event:', error);
+
       setMessageType('error');
       setMessage(
         error instanceof Error
@@ -367,10 +455,11 @@ export default function TeacherScreen() {
               color={COLORS.primary}
             />
           </View>
+
           <View style={styles.headingText}>
             <Text style={styles.pageTitle}>Available Events</Text>
             <Text style={styles.muted}>
-              Browse school events and check their current status.
+              Browse school events and check your attendance status.
             </Text>
           </View>
         </View>
@@ -379,7 +468,7 @@ export default function TeacherScreen() {
           <Text style={styles.summaryNumber}>{events.length}</Text>
           <Text style={styles.summaryLabel}>School events</Text>
           <Text style={styles.summaryHint}>
-            Includes upcoming, ongoing, and completed events.
+            Check whether you are present, absent, or scheduled to attend.
           </Text>
         </View>
 
@@ -389,6 +478,7 @@ export default function TeacherScreen() {
             size={20}
             color={COLORS.textSecondary}
           />
+
           <TextInput
             value={search}
             onChangeText={setSearch}
@@ -397,6 +487,7 @@ export default function TeacherScreen() {
             style={styles.searchInput}
             autoCapitalize="none"
           />
+
           {!!search && (
             <Pressable onPress={() => setSearch('')}>
               <Ionicons
@@ -413,27 +504,27 @@ export default function TeacherScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterRow}
         >
-          {(['All', 'Upcoming', 'Ongoing', 'Completed'] as EventFilter[]).map(
-            (item) => (
-              <Pressable
-                key={item}
-                onPress={() => setFilter(item)}
+          {(
+            ['All', 'Present', 'Absent', 'Ongoing', 'Scheduled'] as EventFilter[]
+          ).map((item) => (
+            <Pressable
+              key={item}
+              onPress={() => setFilter(item)}
+              style={[
+                styles.filterChip,
+                filter === item && styles.filterChipActive,
+              ]}
+            >
+              <Text
                 style={[
-                  styles.filterChip,
-                  filter === item && styles.filterChipActive,
+                  styles.filterText,
+                  filter === item && styles.filterTextActive,
                 ]}
               >
-                <Text
-                  style={[
-                    styles.filterText,
-                    filter === item && styles.filterTextActive,
-                  ]}
-                >
-                  {item}
-                </Text>
-              </Pressable>
-            ),
-          )}
+                {item}
+              </Text>
+            </Pressable>
+          ))}
         </ScrollView>
 
         {loadingEvents ? (
@@ -469,6 +560,7 @@ export default function TeacherScreen() {
               Try another filter or search term. Newly published events will
               appear here when available.
             </Text>
+
             {(filter !== 'All' || search) && (
               <Pressable
                 style={styles.resetButton}
@@ -483,7 +575,11 @@ export default function TeacherScreen() {
           </View>
         ) : (
           filteredEvents.map((event) => {
-            const status = getEventStatus(event, now);
+            const status = getEventStatus(
+              event,
+              now,
+              attendedEventIds,
+            );
 
             return (
               <View key={event.id} style={styles.eventCard}>
@@ -499,9 +595,10 @@ export default function TeacherScreen() {
                   <View
                     style={[
                       styles.statusBadge,
-                      status === 'Upcoming' && styles.upcomingBadge,
+                      status === 'Present' && styles.presentBadge,
+                      status === 'Absent' && styles.absentBadge,
                       status === 'Ongoing' && styles.ongoingBadge,
-                      status === 'Completed' && styles.completedBadge,
+                      status === 'Scheduled' && styles.scheduledBadge,
                     ]}
                   >
                     <Text style={styles.statusText}>{status}</Text>
@@ -558,14 +655,20 @@ export default function TeacherScreen() {
                       {event.event_code}
                     </Text>
                   </View>
+
                   <Pressable
                     style={styles.refreshButton}
                     onPress={() => {
                       const currentTime = Date.now();
                       setNow(currentTime);
+
                       Alert.alert(
                         'Event status',
-                        `${event.title}: ${getEventStatus(event, currentTime)}`,
+                        `${event.title}: ${getEventStatus(
+                          event,
+                          currentTime,
+                          attendedEventIds,
+                        )}`,
                       );
                     }}
                   >
@@ -593,7 +696,7 @@ export default function TeacherScreen() {
             size={17}
             color={COLORS.primary}
           />
-          <Text style={styles.reloadLinkText}>Refresh events</Text>
+          <Text style={styles.reloadLinkText}>Refresh events and attendance</Text>
         </Pressable>
       </ScrollView>
     );
@@ -627,6 +730,7 @@ export default function TeacherScreen() {
             color={COLORS.primary}
           />
         </View>
+
         <View style={styles.headingText}>
           <Text style={styles.pageTitle}>Create Event</Text>
           <Text style={styles.muted}>
@@ -1007,14 +1111,17 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     backgroundColor: COLORS.surface,
   },
-  upcomingBadge: {
-    backgroundColor: '#E8EDFF',
+  presentBadge: {
+    backgroundColor: '#DDF5E5',
+  },
+  absentBadge: {
+    backgroundColor: '#FCE7E7',
   },
   ongoingBadge: {
-    backgroundColor: '#E5F5EA',
+    backgroundColor: '#FFF0CC',
   },
-  completedBadge: {
-    backgroundColor: '#ECECEC',
+  scheduledBadge: {
+    backgroundColor: '#E8EDFF',
   },
   statusText: {
     fontSize: 10,

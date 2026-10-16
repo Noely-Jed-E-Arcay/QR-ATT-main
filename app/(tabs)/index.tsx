@@ -1,9 +1,10 @@
 
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -31,11 +32,11 @@ import {
 
 type UserRole = 'student' | 'teacher' | 'admin';
 
+const ANNOUNCEMENT_PREVIEW_LIMIT = 3;
+
 export default function Index() {
   const { user } = useAuth();
   const { width } = useWindowDimensions();
-  const scrollViewRef = useRef<ScrollView>(null);
-  const [eventsSectionY, setEventsSectionY] = useState(0);
 
   const [role, setRole] = useState<UserRole>('student');
   const [loadingRole, setLoadingRole] = useState(true);
@@ -44,6 +45,11 @@ export default function Index() {
   const [loadingAnnouncements, setLoadingAnnouncements] = useState(true);
   const [announcementError, setAnnouncementError] = useState('');
   const [readingId, setReadingId] = useState<string | null>(null);
+  const [selectedAnnouncement, setSelectedAnnouncement] =
+    useState<Announcement | null>(null);
+  const [announcementModalVisible, setAnnouncementModalVisible] =
+    useState(false);
+  const [showAllAnnouncements, setShowAllAnnouncements] = useState(false);
 
   const [events, setEvents] = useState<CloudEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(true);
@@ -85,7 +91,21 @@ export default function Index() {
         getAvailableEvents(),
       ]);
 
-      setAnnouncements(announcementResult.data ?? []);
+      // Fixing: show the newest published announcements first.
+      const sortedAnnouncements = [
+        ...(announcementResult.data ?? []),
+      ].sort((a, b) => {
+        const dateA = a.published_at
+          ? new Date(a.published_at).getTime()
+          : 0;
+        const dateB = b.published_at
+          ? new Date(b.published_at).getTime()
+          : 0;
+
+        return dateB - dateA;
+      });
+
+      setAnnouncements(sortedAnnouncements);
 
       if (announcementResult.error) {
         setAnnouncementError(
@@ -93,7 +113,21 @@ export default function Index() {
         );
       }
 
-      setEvents(eventResult.events);
+      // Fixing: show the nearest upcoming event first.
+      const sortedEvents = [...(eventResult.events ?? [])].sort(
+        (a, b) => {
+          const dateA = a.start_time
+            ? new Date(a.start_time).getTime()
+            : Number.POSITIVE_INFINITY;
+          const dateB = b.start_time
+            ? new Date(b.start_time).getTime()
+            : Number.POSITIVE_INFINITY;
+
+          return dateA - dateB;
+        },
+      );
+
+      setEvents(sortedEvents);
 
       if (eventResult.error) {
         setEventError(
@@ -102,6 +136,7 @@ export default function Index() {
       }
     } catch (error) {
       console.error('Failed to load dashboard:', error);
+
       setAnnouncementError(
         'Unable to load announcements. Check your connection and try again.',
       );
@@ -135,48 +170,6 @@ export default function Index() {
     : isTeacher
       ? 'Create events, generate QR codes, and monitor attendance.'
       : 'Stay updated with school activities and keep your attendance organized.';
-
-  const handleAnnouncementPress = async (
-    announcement: Announcement,
-  ) => {
-    if (!user || readingId) return;
-
-    if (announcement.is_read) {
-      Alert.alert(announcement.title, announcement.message);
-      return;
-    }
-
-    setReadingId(announcement.id);
-
-    try {
-      const result = await markAnnouncementAsRead(
-        announcement.id,
-        user.id,
-      );
-
-      if (result.error) {
-        Alert.alert(
-          'Could not mark as read',
-          'The announcement will open, but its read status could not be saved.',
-        );
-      } else {
-        setAnnouncements((current) =>
-          current.map((item) =>
-            item.id === announcement.id
-              ? { ...item, is_read: true }
-              : item,
-          ),
-        );
-      }
-
-      Alert.alert(announcement.title, announcement.message);
-    } catch (error) {
-      console.error('Failed to mark announcement as read:', error);
-      Alert.alert(announcement.title, announcement.message);
-    } finally {
-      setReadingId(null);
-    }
-  };
 
   const formatAnnouncementDate = (dateString: string | null) => {
     if (!dateString) return 'Date unavailable';
@@ -216,17 +209,75 @@ export default function Index() {
     void loadDashboard();
   };
 
-  const scrollToEvents = () => {
-    scrollViewRef.current?.scrollTo({
-      y: Math.max(eventsSectionY - 10, 0),
-      animated: true,
-    });
+  const openEvents = () => {
+    if (isAdministrator) {
+      router.push('/administrator');
+    } else {
+      router.push('/teacher');
+    }
   };
+
+  const openAnnouncement = async (
+    announcement: Announcement,
+  ) => {
+    setSelectedAnnouncement(announcement);
+    setAnnouncementModalVisible(true);
+
+    if (!user || announcement.is_read || readingId) {
+      return;
+    }
+
+    setReadingId(announcement.id);
+
+    try {
+      const result = await markAnnouncementAsRead(
+        announcement.id,
+        user.id,
+      );
+
+      if (result.error) {
+        Alert.alert(
+          'Could not mark as read',
+          'You can still read the announcement. Its read status could not be saved.',
+        );
+        return;
+      }
+
+      const updatedAnnouncement = {
+        ...announcement,
+        is_read: true,
+      };
+
+      setAnnouncements((current) =>
+        current.map((item) =>
+          item.id === announcement.id
+            ? updatedAnnouncement
+            : item,
+        ),
+      );
+
+      setSelectedAnnouncement(updatedAnnouncement);
+    } catch (error) {
+      console.error('Failed to mark announcement as read:', error);
+    } finally {
+      setReadingId(null);
+    }
+  };
+
+  const nextEvent = events[0];
+
+  const unreadCount = announcements.filter(
+    (announcement) => !announcement.is_read,
+  ).length;
+
+  // Fixing: display only three announcement summaries by default.
+  const visibleAnnouncements = showAllAnnouncements
+    ? announcements
+    : announcements.slice(0, ANNOUNCEMENT_PREVIEW_LIMIT);
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
-        ref={scrollViewRef}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
@@ -373,7 +424,7 @@ export default function Index() {
                   icon="calendar-outline"
                   title="School Events"
                   description="Access event management"
-                  onPress={() => router.push('/administrator')}
+                  onPress={openEvents}
                 />
 
                 <ShortcutCard
@@ -451,7 +502,7 @@ export default function Index() {
                   icon="calendar-outline"
                   title="School Events"
                   description="Check available school events"
-                  onPress={scrollToEvents}
+                  onPress={openEvents}
                 />
 
                 <ShortcutCard
@@ -466,44 +517,19 @@ export default function Index() {
           </View>
         </View>
 
-        {/* SCHOOL EVENTS FEED */}
-        <View
-          style={styles.section}
-          onLayout={(event) =>
-            setEventsSectionY(event.nativeEvent.layout.y)
-          }
-        >
-          <View style={styles.announcementHeader}>
-            <View style={styles.announcementHeading}>
-              <Ionicons
-                name="calendar-outline"
-                size={20}
-                color={COLORS.primary}
-              />
-              <Text style={styles.sectionTitle}>School Events</Text>
-            </View>
-
-            {!loadingEvents && (
-              <View style={styles.countBadge}>
-                <Text style={styles.countBadgeText}>
-                  {events.length} available
-                </Text>
-              </View>
-            )}
-          </View>
+        {/* SCHOOL EVENTS SUMMARY */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>School Events</Text>
 
           {loadingEvents ? (
-            <View style={styles.announcementStateCard}>
-              <ActivityIndicator
-                size="small"
-                color={COLORS.primary}
-              />
+            <View style={styles.stateCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.stateText}>
                 Loading school events...
               </Text>
             </View>
           ) : eventError ? (
-            <View style={styles.announcementStateCard}>
+            <View style={styles.stateCard}>
               <Ionicons
                 name="alert-circle-outline"
                 size={25}
@@ -518,97 +544,75 @@ export default function Index() {
                 <Text style={styles.retryButtonText}>Try again</Text>
               </Pressable>
             </View>
-          ) : events.length === 0 ? (
-            <View style={styles.announcementStateCard}>
-              <View style={styles.emptyAnnouncementIcon}>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open school events"
+              onPress={openEvents}
+              style={({ pressed }) => [
+                styles.eventSummaryCard,
+                pressed && styles.cardPressed,
+              ]}
+            >
+              <View style={styles.summaryIcon}>
                 <Ionicons
-                  name="calendar-clear-outline"
-                  size={25}
+                  name="calendar-outline"
+                  size={26}
                   color={COLORS.primary}
                 />
               </View>
 
-              <Text style={styles.emptyAnnouncementTitle}>
-                No available events
-              </Text>
-
-              <Text style={styles.stateText}>
-                Events created by teachers and administrators will
-                appear here when they are available.
-              </Text>
-            </View>
-          ) : (
-            events.map((event) => (
-              <View key={event.id} style={styles.announcementCard}>
-                <View style={styles.announcementIcon}>
+              <View style={styles.summaryContent}>
+                <View style={styles.summaryTitleRow}>
+                  <Text style={styles.summaryTitle}>
+                    {events.length === 0
+                      ? 'No available events'
+                      : `${events.length} available event${events.length === 1 ? '' : 's'}`}
+                  </Text>
                   <Ionicons
-                    name="calendar"
-                    size={22}
+                    name="chevron-forward"
+                    size={19}
                     color={COLORS.primary}
                   />
                 </View>
 
-                <View style={styles.announcementContent}>
-                  <Text style={styles.announcementTitle}>
-                    {event.title}
-                  </Text>
-
-                  {!!event.description && (
-                    <Text
-                      style={styles.announcementDescription}
-                      numberOfLines={3}
-                    >
-                      {event.description}
+                {nextEvent ? (
+                  <>
+                    <Text style={styles.summaryDescription}>
+                      {isAdministrator
+                        ? 'Open your school event dashboard.'
+                        : isTeacher
+                          ? 'View and manage your school events.'
+                          : 'Tap to explore available school events.'}
                     </Text>
-                  )}
 
-                  <View style={styles.eventDetailRow}>
-                    <Ionicons
-                      name="time-outline"
-                      size={14}
-                      color={COLORS.textSecondary}
-                    />
-                    <Text style={styles.announcementDate}>
-                      Starts: {formatEventDate(event.start_time)}
-                    </Text>
-                  </View>
-
-                  {event.end_time && (
-                    <View style={styles.eventDetailRow}>
+                    <View style={styles.nextEventBadge}>
                       <Ionicons
-                        name="checkmark-circle-outline"
+                        name="time-outline"
                         size={14}
                         color={COLORS.textSecondary}
                       />
-                      <Text style={styles.announcementDate}>
-                        Ends: {formatEventDate(event.end_time)}
+                      <Text style={styles.nextEventText}>
+                        Next: {nextEvent.title}
                       </Text>
                     </View>
-                  )}
 
-                  {!!event.location && (
-                    <View style={styles.eventDetailRow}>
-                      <Ionicons
-                        name="location-outline"
-                        size={14}
-                        color={COLORS.textSecondary}
-                      />
-                      <Text style={styles.announcementDate}>
-                        {event.location}
-                      </Text>
-                    </View>
-                  )}
-
-                  <Text style={styles.eventCode}>
-                    Event code: {event.event_code}
+                    <Text style={styles.eventDateText}>
+                      {formatEventDate(nextEvent.start_time)}
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.summaryDescription}>
+                    Tap here to check school events when they become
+                    available.
                   </Text>
-                </View>
+                )}
               </View>
-            ))
+            </Pressable>
           )}
         </View>
 
-        {/* ANNOUNCEMENTS FEED */}
+        {/* ANNOUNCEMENTS */}
         <View style={styles.section}>
           <View style={styles.announcementHeader}>
             <View style={styles.announcementHeading}>
@@ -623,33 +627,27 @@ export default function Index() {
             {!loadingAnnouncements && announcements.length > 0 && (
               <View style={styles.countBadge}>
                 <Text style={styles.countBadgeText}>
-                  {announcements.filter((item) => !item.is_read).length}{' '}
-                  unread
+                  {unreadCount} unread
                 </Text>
               </View>
             )}
           </View>
 
           {loadingAnnouncements ? (
-            <View style={styles.announcementStateCard}>
-              <ActivityIndicator
-                size="small"
-                color={COLORS.primary}
-              />
+            <View style={styles.stateCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.stateText}>
                 Loading announcements...
               </Text>
             </View>
           ) : announcementError ? (
-            <View style={styles.announcementStateCard}>
+            <View style={styles.stateCard}>
               <Ionicons
                 name="alert-circle-outline"
                 size={25}
                 color={COLORS.danger}
               />
-              <Text style={styles.stateText}>
-                {announcementError}
-              </Text>
+              <Text style={styles.stateText}>{announcementError}</Text>
 
               <Pressable
                 style={styles.retryButton}
@@ -659,7 +657,7 @@ export default function Index() {
               </Pressable>
             </View>
           ) : announcements.length === 0 ? (
-            <View style={styles.announcementStateCard}>
+            <View style={styles.stateCard}>
               <View style={styles.emptyAnnouncementIcon}>
                 <Ionicons
                   name="notifications-off-outline"
@@ -674,90 +672,130 @@ export default function Index() {
 
               <Text style={styles.stateText}>
                 School notices, event reminders, and important updates
-                will appear here when published by the administrator or
-                authorized teacher.
+                will appear here when published.
               </Text>
             </View>
           ) : (
-            announcements.map((announcement) => (
-              <Pressable
-                key={announcement.id}
-                style={({ pressed }) => [
-                  styles.announcementCard,
-                  !announcement.is_read &&
-                    styles.unreadAnnouncementCard,
-                  pressed && styles.announcementPressed,
-                ]}
-                onPress={() =>
-                  void handleAnnouncementPress(announcement)
-                }
-                disabled={readingId !== null}
-              >
-                <View style={styles.announcementIcon}>
-                  <Ionicons
-                    name={
-                      announcement.is_read
-                        ? 'notifications-outline'
-                        : 'notifications'
-                    }
-                    size={22}
-                    color={COLORS.primary}
-                  />
-                </View>
-
-                <View style={styles.announcementContent}>
-                  <View style={styles.announcementTitleRow}>
-                    <Text style={styles.announcementTitle}>
-                      {announcement.title}
-                    </Text>
-
-                    {!announcement.is_read && (
-                      <View style={styles.unreadDot} />
-                    )}
+            <>
+              {visibleAnnouncements.map((announcement) => (
+                <Pressable
+                  key={announcement.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Read announcement: ${announcement.title}`}
+                  style={({ pressed }) => [
+                    styles.announcementCard,
+                    !announcement.is_read &&
+                      styles.unreadAnnouncementCard,
+                    pressed && styles.cardPressed,
+                  ]}
+                  onPress={() => void openAnnouncement(announcement)}
+                  disabled={readingId !== null}
+                >
+                  <View style={styles.announcementIcon}>
+                    <Ionicons
+                      name={
+                        announcement.is_read
+                          ? 'notifications-outline'
+                          : 'notifications'
+                      }
+                      size={22}
+                      color={COLORS.primary}
+                    />
                   </View>
 
-                  <Text
-                    style={styles.announcementDescription}
-                    numberOfLines={3}
-                  >
-                    {announcement.message}
-                  </Text>
+                  <View style={styles.announcementContent}>
+                    <View style={styles.announcementTitleRow}>
+                      <Text style={styles.announcementTitle}>
+                        {announcement.title}
+                      </Text>
 
-                  <View style={styles.announcementMeta}>
+                      {!announcement.is_read && (
+                        <View style={styles.unreadDot} />
+                      )}
+                    </View>
+
+                    <Text
+                      style={styles.announcementDescription}
+                      numberOfLines={2}
+                      ellipsizeMode="tail"
+                    >
+                      {announcement.message}
+                    </Text>
+
+                    <View style={styles.announcementMeta}>
+                      <Ionicons
+                        name="calendar-outline"
+                        size={12}
+                        color={COLORS.textSecondary}
+                      />
+
+                      <Text style={styles.announcementDate}>
+                        {formatAnnouncementDate(
+                          announcement.published_at,
+                        )}
+                      </Text>
+
+                      <Text style={styles.metaSeparator}>•</Text>
+
+                      <Text style={styles.announcementReadStatus}>
+                        {announcement.is_read ? 'Read' : 'Unread'}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.tapToRead}>
+                      Tap to read full announcement
+                    </Text>
+                  </View>
+
+                  {readingId === announcement.id ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={COLORS.primary}
+                    />
+                  ) : (
                     <Ionicons
-                      name="calendar-outline"
-                      size={12}
+                      name="chevron-forward"
+                      size={18}
                       color={COLORS.textSecondary}
                     />
+                  )}
+                </Pressable>
+              ))}
 
-                    <Text style={styles.announcementDate}>
-                      {formatAnnouncementDate(
-                        announcement.published_at,
-                      )}
-                    </Text>
+              {announcements.length > ANNOUNCEMENT_PREVIEW_LIMIT && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    showAllAnnouncements
+                      ? 'Show fewer announcements'
+                      : 'View all announcements'
+                  }
+                  onPress={() =>
+                    setShowAllAnnouncements((current) => !current)
+                  }
+                  style={({ pressed }) => [
+                    styles.viewAllAnnouncementsButton,
+                    pressed && styles.cardPressed,
+                  ]}
+                >
+                  <Text style={styles.viewAllAnnouncementsText}>
+                    {showAllAnnouncements
+                      ? 'Show Less'
+                      : `View All Announcements (${announcements.length})`}
+                  </Text>
 
-                    <Text style={styles.metaSeparator}>•</Text>
-
-                    <Text style={styles.announcementReadStatus}>
-                      {announcement.is_read ? 'Read' : 'Unread'}
-                    </Text>
-                  </View>
-                </View>
-
-                {readingId === announcement.id ? (
-                  <ActivityIndicator
-                    size="small"
+                  <Ionicons
+                    name={
+                      showAllAnnouncements
+                        ? 'chevron-up'
+                        : 'chevron-down'
+                    }
+                    size={16}
                     color={COLORS.primary}
                   />
-                ) : (
-                  <Ionicons
-                    name="chevron-forward"
-                    size={18}
-                    color={COLORS.textSecondary}
-                  />
-                )}
-              </Pressable>
-            ))
+                </Pressable>
+              )}
+            </>
           )}
         </View>
 
@@ -771,6 +809,101 @@ export default function Index() {
           <Text style={styles.footerText}>School Event Attendance</Text>
         </View>
       </ScrollView>
+
+      {/* FULL ANNOUNCEMENT MODAL */}
+      <Modal
+        visible={announcementModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setAnnouncementModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalIcon}>
+                <Ionicons
+                  name="megaphone-outline"
+                  size={23}
+                  color={COLORS.primary}
+                />
+              </View>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close announcement"
+                onPress={() => setAnnouncementModalVisible(false)}
+                style={styles.closeButton}
+              >
+                <Ionicons
+                  name="close"
+                  size={23}
+                  color={COLORS.textPrimary}
+                />
+              </Pressable>
+            </View>
+
+            {selectedAnnouncement && (
+              <>
+                <Text style={styles.modalEyebrow}>ANNOUNCEMENT</Text>
+
+                <Text style={styles.modalTitle}>
+                  {selectedAnnouncement.title}
+                </Text>
+
+                <View style={styles.modalMetadata}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={15}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.modalDate}>
+                    Published{' '}
+                    {formatAnnouncementDate(
+                      selectedAnnouncement.published_at,
+                    )}
+                  </Text>
+                </View>
+
+                <View style={styles.modalMetadata}>
+                  <Ionicons
+                    name="people-outline"
+                    size={15}
+                    color={COLORS.primary}
+                  />
+                  <Text style={styles.modalDate}>
+                    Audience:{' '}
+                    {selectedAnnouncement.target_audience === 'all'
+                      ? 'Everyone'
+                      : selectedAnnouncement.target_audience === 'student'
+                        ? 'Students'
+                        : 'Teachers'}
+                  </Text>
+                </View>
+
+                <View style={styles.modalDivider} />
+
+                <ScrollView
+                  style={styles.modalMessageScroll}
+                  contentContainerStyle={styles.modalMessageContent}
+                  showsVerticalScrollIndicator
+                >
+                  <Text style={styles.modalMessage}>
+                    {selectedAnnouncement.message}
+                  </Text>
+                </ScrollView>
+
+                <AppButton
+                  theme="primary"
+                  title="Close"
+                  icon="checkmark-outline"
+                  onPress={() => setAnnouncementModalVisible(false)}
+                />
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -798,15 +931,11 @@ function ShortcutCard({
       style={({ pressed }) => [
         styles.shortcutCard,
         compact && styles.shortcutCardCompact,
-        pressed && styles.shortcutPressed,
+        pressed && styles.cardPressed,
       ]}
     >
       <View style={styles.shortcutIcon}>
-        <Ionicons
-          name={icon}
-          size={21}
-          color={COLORS.primary}
-        />
+        <Ionicons name={icon} size={21} color={COLORS.primary} />
       </View>
 
       <Text style={styles.shortcutTitle}>{title}</Text>
@@ -954,7 +1083,7 @@ const styles = StyleSheet.create({
   shortcutCardCompact: {
     padding: 10,
   },
-  shortcutPressed: {
+  cardPressed: {
     opacity: 0.75,
   },
   shortcutIcon: {
@@ -988,6 +1117,62 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontSize: 10,
     fontWeight: '700',
+  },
+  eventSummaryCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: 15,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.surface,
+    borderRadius: 16,
+  },
+  summaryIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryContent: {
+    flex: 1,
+  },
+  summaryTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  summaryTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+    flex: 1,
+  },
+  summaryDescription: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 5,
+  },
+  nextEventBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 10,
+  },
+  nextEventText: {
+    flex: 1,
+    color: COLORS.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  eventDateText: {
+    color: COLORS.textSecondary,
+    fontSize: 10,
+    marginTop: 5,
   },
   announcementHeader: {
     flexDirection: 'row',
@@ -1027,9 +1212,6 @@ const styles = StyleSheet.create({
   unreadAnnouncementCard: {
     borderColor: COLORS.primary,
   },
-  announcementPressed: {
-    opacity: 0.75,
-  },
   announcementIcon: {
     width: 38,
     height: 38,
@@ -1040,6 +1222,7 @@ const styles = StyleSheet.create({
   },
   announcementContent: {
     flex: 1,
+    minWidth: 0,
   },
   announcementTitleRow: {
     flexDirection: 'row',
@@ -1084,7 +1267,31 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  announcementStateCard: {
+  tapToRead: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  viewAllAnnouncementsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.surface,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 2,
+  },
+  viewAllAnnouncementsText: {
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  stateCard: {
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: COLORS.card,
@@ -1126,19 +1333,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  eventDetailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 5,
-    marginTop: 7,
-  },
-  eventCode: {
-    color: COLORS.primary,
-    fontSize: 10,
-    fontWeight: '800',
-    marginTop: 9,
-  },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1150,5 +1344,85 @@ const styles = StyleSheet.create({
   footerText: {
     color: COLORS.textSecondary,
     fontSize: 10,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 500,
+    maxHeight: '85%',
+    backgroundColor: COLORS.background,
+    borderRadius: 22,
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 15,
+  },
+  modalIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalEyebrow: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginBottom: 7,
+  },
+  modalTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 21,
+    fontWeight: '800',
+    lineHeight: 28,
+  },
+  modalMetadata: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginTop: 9,
+  },
+  modalDate: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    flexShrink: 1,
+  },
+  modalDivider: {
+    height: 1,
+    backgroundColor: COLORS.surface,
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  modalMessageScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+    marginBottom: 18,
+  },
+  modalMessageContent: {
+    paddingBottom: 4,
+  },
+  modalMessage: {
+    color: COLORS.textPrimary,
+    fontSize: 14,
+    lineHeight: 23,
   },
 });

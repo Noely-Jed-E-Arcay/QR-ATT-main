@@ -1,9 +1,5 @@
 import { useEffect, useState } from 'react';
-import type {
-  Session,
-  User,
-  AuthError,
-} from '@supabase/supabase-js';
+import type { Session, User, AuthError } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
 
@@ -29,11 +25,10 @@ let authState: AuthState = {
   loading: true,
 };
 
-const listeners = new Set<
-  (state: AuthState) => void
->();
+const listeners = new Set<(state: AuthState) => void>();
 
 let initialized = false;
+let authEventVersion = 0;
 
 function publishAuthState(
   session: Session | null,
@@ -45,9 +40,7 @@ function publishAuthState(
     loading,
   };
 
-  listeners.forEach((listener) => {
-    listener(authState);
-  });
+  listeners.forEach((listener) => listener(authState));
 }
 
 function initializeAuth(): void {
@@ -55,14 +48,14 @@ function initializeAuth(): void {
 
   initialized = true;
 
-  // Subscribe first so auth changes are not missed while
-  // the initial session is being restored.
-  const { data: subscription } =
-    supabase.auth.onAuthStateChange((_event, session) => {
-      publishAuthState(session, false);
-    });
+  // Subscribe before restoring the saved session.
+  supabase.auth.onAuthStateChange((_event, session) => {
+    authEventVersion += 1;
+    publishAuthState(session, false);
+  });
 
-  // Restore the persisted session.
+  const initialVersion = authEventVersion;
+
   void supabase.auth
     .getSession()
     .then(({ data, error }) => {
@@ -73,20 +66,18 @@ function initializeAuth(): void {
         );
       }
 
+      // Do not overwrite a newer sign-in or sign-out event.
+      if (authEventVersion !== initialVersion) return;
+
       publishAuthState(data.session ?? null, false);
     })
     .catch((error: unknown) => {
-      console.error(
-        'Authentication initialization failed:',
-        error,
-      );
+      console.error('Authentication initialization failed:', error);
+
+      if (authEventVersion !== initialVersion) return;
 
       publishAuthState(null, false);
     });
-
-  // Keep the subscription alive for the app lifetime.
-  // Supabase manages token refresh and auth events.
-  void subscription;
 }
 
 initializeAuth();
@@ -114,10 +105,12 @@ export async function signUp(
   email: string,
   password: string,
   profile?: SignupProfile,
-): Promise<AuthResult<{
-  user: User | null;
-  session: Session | null;
-}>> {
+): Promise<
+  AuthResult<{
+    user: User | null;
+    session: Session | null;
+  }>
+> {
   try {
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -142,8 +135,7 @@ export async function signUp(
       return { data: null, error };
     }
 
-    // Never accept an elevated role from registration input.
-    // The database signup trigger must create student profiles.
+    // Supabase's auth listener updates the session when one is issued.
     if (data.session) {
       publishAuthState(data.session);
     }
@@ -169,10 +161,12 @@ export async function signUp(
 export async function signIn(
   email: string,
   password: string,
-): Promise<AuthResult<{
-  user: User;
-  session: Session;
-}>> {
+): Promise<
+  AuthResult<{
+    user: User;
+    session: Session;
+  }>
+> {
   try {
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -183,17 +177,24 @@ export async function signIn(
       };
     }
 
-    const { data, error } =
-      await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
-      });
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    });
 
     if (error) {
       return { data: null, error };
     }
 
-    publishAuthState(data.session);
+    if (!data.user || !data.session) {
+      return {
+        data: null,
+        error: new Error('Login succeeded without a valid session.'),
+      };
+    }
+
+    // Fixing: publish the authenticated session immediately.
+    publishAuthState(data.session, false);
 
     return {
       data: {
@@ -213,7 +214,9 @@ export async function signIn(
   }
 }
 
-export async function signOut(): Promise<{ error: AuthError | Error | null }> {
+export async function signOut(): Promise<{
+  error: AuthError | Error | null;
+}> {
   try {
     const { error } = await supabase.auth.signOut();
 
@@ -222,10 +225,14 @@ export async function signOut(): Promise<{ error: AuthError | Error | null }> {
     }
 
     publishAuthState(null, false);
+
     return { error: null };
   } catch (error) {
     return {
-      error: error instanceof Error ? error : new Error('Failed to sign out.'),
+      error:
+        error instanceof Error
+          ? error
+          : new Error('Failed to sign out.'),
     };
   }
 }

@@ -1,3 +1,5 @@
+// Fixing: Navigate immediately after successful login while
+// preserving the existing authentication state and UI.
 
 import { useState } from 'react';
 import {
@@ -12,7 +14,7 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
 } from 'react-native';
-import { Link } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AppButton from '@/components/AppButton';
@@ -22,6 +24,7 @@ import { signIn } from '@/lib/auth';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,26 +34,35 @@ export default function LoginScreen() {
   const handleLogin = async () => {
     if (loading) return;
 
+    Keyboard.dismiss();
     setError(null);
     setLoading(true);
 
     try {
-      const { error: authError } = await signIn(
+      const { data, error: authError } = await signIn(
         email.trim(),
-        password
+        password,
       );
 
       if (authError) {
         setError(authError.message);
+        return;
       }
 
-      // Navigation is handled by app/_layout.tsx.
-      // Do not call router.replace() here.
+      if (!data?.user || !data?.session) {
+        setError(
+          'Login did not return a valid session. Please try again.',
+        );
+        return;
+      }
+
+      // Fixing: Navigate immediately after successful authentication.
+      router.replace('/(tabs)');
     } catch (err: unknown) {
       setError(
         err instanceof Error
           ? err.message
-          : 'Unexpected error'
+          : 'An unexpected error occurred during login.',
       );
     } finally {
       setLoading(false);
@@ -111,6 +123,7 @@ export default function LoginScreen() {
                 placeholderTextColor={COLORS.textSecondary}
                 secureTextEntry
                 autoCapitalize="none"
+                autoCorrect={false}
                 editable={!loading}
                 returnKeyType="done"
                 onSubmitEditing={handleLogin}
@@ -151,23 +164,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   keyboardView: {
     flex: 1,
   },
-
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 24,
     paddingBottom: 40,
   },
-
   headerContainer: {
     alignItems: 'center',
     marginTop: 20,
     marginBottom: 16,
   },
-
   title: {
     fontSize: 28,
     fontWeight: '700',
@@ -175,7 +184,6 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     marginBottom: 4,
   },
-
   subtitle: {
     fontSize: 15,
     color: COLORS.textSecondary,
@@ -183,18 +191,15 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 32,
   },
-
   form: {
     marginBottom: 24,
   },
-
   label: {
     fontSize: 14,
     fontWeight: '600',
     color: COLORS.textPrimary,
     marginBottom: 6,
   },
-
   input: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
@@ -206,7 +211,6 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     marginBottom: 16,
   },
-
   error: {
     fontSize: 14,
     color: COLORS.danger,
@@ -214,11 +218,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 12,
   },
-
   loader: {
     marginVertical: 16,
   },
-
   link: {
     fontSize: 14,
     color: COLORS.primary,
