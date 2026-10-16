@@ -10,6 +10,8 @@ export type Event = {
   end: string;
 };
 
+export type EventStatus = 'open' | 'closed';
+
 export type CloudEvent = {
   id: string;
   event_code: string;
@@ -20,14 +22,37 @@ export type CloudEvent = {
   end_time: string | null;
   created_by: string | null;
   created_at: string;
+  status: EventStatus;
 };
+
+function normalizeEventStatus(value: unknown): EventStatus {
+  return value === 'closed' ? 'closed' : 'open';
+}
+
+function normalizeCloudEvent(row: any): CloudEvent {
+  return {
+    id: row.id,
+    event_code: row.event_code,
+    title: row.title,
+    location: row.location ?? null,
+    description: row.description ?? null,
+    start_time: row.start_time ?? null,
+    end_time: row.end_time ?? null,
+    created_by: row.created_by ?? null,
+    created_at: row.created_at,
+    status: normalizeEventStatus(row.status),
+  };
+}
 
 /**
  * Create a new event.
- * Only authenticated users can create events when permitted by RLS.
+ * New events start open using the existing status column.
  */
 export async function createEvent(
-  event: Omit<CloudEvent, 'id' | 'created_at' | 'created_by'>,
+  event: Omit<
+    CloudEvent,
+    'id' | 'created_at' | 'created_by' | 'status'
+  >,
 ): Promise<{ event: CloudEvent | null; error: string | null }> {
   try {
     const {
@@ -45,28 +70,25 @@ export async function createEvent(
     const { data, error } = await supabase
       .from('events')
       .insert({
-        event_code: event.event_code,
-        title: event.title,
-        location: event.location,
-        description: event.description,
+        event_code: event.event_code.trim().toUpperCase(),
+        title: event.title.trim(),
+        location: event.location?.trim() || null,
+        description: event.description?.trim() || null,
         start_time: event.start_time,
         end_time: event.end_time,
         created_by: user.id,
+        status: 'open',
       })
       .select('*')
       .single();
 
     if (error) {
       console.error('createEvent error:', error.message);
-
-      return {
-        event: null,
-        error: error.message,
-      };
+      return { event: null, error: error.message };
     }
 
     return {
-      event: data as CloudEvent,
+      event: normalizeCloudEvent(data),
       error: null,
     };
   } catch (error) {
@@ -84,11 +106,8 @@ export async function createEvent(
 
 /**
  * Get all events visible to the signed-in user.
- *
- * IMPORTANT:
- * This function does not remove past or completed events.
- * Supabase Row Level Security (RLS) still controls which rows
- * the signed-in user is allowed to read.
+ * Events are ordered by start time, latest first.
+ * Closed events remain available for status/history display.
  */
 export async function getAvailableEvents(): Promise<{
   events: CloudEvent[];
@@ -107,40 +126,21 @@ export async function getAvailableEvents(): Promise<{
       };
     }
 
-    const { data, error, count } = await supabase
+    const { data, error } = await supabase
       .from('events')
-      .select('*', { count: 'exact' })
+      .select('*')
       .order('start_time', {
-        ascending: true,
+        ascending: false,
         nullsFirst: false,
       });
 
     if (error) {
       console.error('getAvailableEvents error:', error.message);
-
-      return {
-        events: [],
-        error: error.message,
-      };
+      return { events: [], error: error.message };
     }
 
-    const allEvents = (data ?? []) as CloudEvent[];
-
-    console.log('Available Events Debug:', {
-      signedInUser: user.id,
-      returnedRows: allEvents.length,
-      exactCount: count,
-      eventCodes: allEvents.map((event) => event.event_code),
-      events: allEvents.map((event) => ({
-        id: event.id,
-        title: event.title,
-        start_time: event.start_time,
-        end_time: event.end_time,
-      })),
-    });
-
     return {
-      events: allEvents,
+      events: (data ?? []).map(normalizeCloudEvent),
       error: null,
     };
   } catch (error) {
@@ -157,7 +157,7 @@ export async function getAvailableEvents(): Promise<{
 }
 
 /**
- * Get events created by the currently signed-in teacher.
+ * Get events created by the currently signed-in user.
  */
 export async function getEventsByTeacher(): Promise<{
   events: CloudEvent[];
@@ -184,15 +184,11 @@ export async function getEventsByTeacher(): Promise<{
 
     if (error) {
       console.error('getEventsByTeacher error:', error.message);
-
-      return {
-        events: [],
-        error: error.message,
-      };
+      return { events: [], error: error.message };
     }
 
     return {
-      events: (data ?? []) as CloudEvent[],
+      events: (data ?? []).map(normalizeCloudEvent),
       error: null,
     };
   } catch (error) {
@@ -215,7 +211,7 @@ export async function getEventByCode(
   eventCode: string,
 ): Promise<{ event: CloudEvent | null; error: string | null }> {
   try {
-    const normalizedCode = eventCode.trim();
+    const normalizedCode = eventCode.trim().toUpperCase();
 
     if (!normalizedCode) {
       return {
@@ -232,11 +228,7 @@ export async function getEventByCode(
 
     if (error) {
       console.error('getEventByCode error:', error.message);
-
-      return {
-        event: null,
-        error: error.message,
-      };
+      return { event: null, error: error.message };
     }
 
     if (!data) {
@@ -247,7 +239,7 @@ export async function getEventByCode(
     }
 
     return {
-      event: data as CloudEvent,
+      event: normalizeCloudEvent(data),
       error: null,
     };
   } catch (error) {
@@ -264,8 +256,78 @@ export async function getEventByCode(
 }
 
 /**
+ * Close or reopen an event using events.status.
+ * Database RLS policies must authorize the requested update.
+ */
+export async function setEventClosed(
+  eventId: string,
+  isClosed: boolean,
+): Promise<{ event: CloudEvent | null; error: string | null }> {
+  try {
+    if (!eventId.trim()) {
+      return {
+        event: null,
+        error: 'A valid event ID is required.',
+      };
+    }
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return {
+        event: null,
+        error: 'You must be signed in to manage events.',
+      };
+    }
+
+    const status: EventStatus = isClosed ? 'closed' : 'open';
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({ status })
+      .eq('id', eventId)
+      .select('*')
+      .maybeSingle();
+
+    if (error) {
+      console.error('setEventClosed error:', error.message);
+
+      return {
+        event: null,
+        error: error.message,
+      };
+    }
+
+    if (!data) {
+      return {
+        event: null,
+        error:
+          'The event was not updated. Check your teacher/admin permissions and Supabase RLS policies.',
+      };
+    }
+
+    return {
+      event: normalizeCloudEvent(data),
+      error: null,
+    };
+  } catch (error) {
+    console.error('setEventClosed exception:', error);
+
+    return {
+      event: null,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to update the event status.',
+    };
+  }
+}
+
+/**
  * Delete an event created by the currently signed-in user.
- * Supabase RLS must also permit the deletion.
  */
 export async function deleteEvent(
   eventId: string,
@@ -292,11 +354,7 @@ export async function deleteEvent(
 
     if (error) {
       console.error('deleteEvent error:', error.message);
-
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
 
     if (!data || data.length === 0) {
@@ -307,10 +365,7 @@ export async function deleteEvent(
       };
     }
 
-    return {
-      success: true,
-      error: null,
-    };
+    return { success: true, error: null };
   } catch (error) {
     console.error('deleteEvent exception:', error);
 
@@ -319,14 +374,14 @@ export async function deleteEvent(
       error:
         error instanceof Error
           ? error.message
-          : 'Failed to delete event.',
+          : 'Failed to delete the event.',
     };
   }
 }
 
 /**
  * Update an event created by the currently signed-in user.
- * Supabase RLS must also permit the update.
+ * Status is managed separately and cannot be changed through this function.
  */
 export async function updateEvent(
   eventId: string,
@@ -343,6 +398,13 @@ export async function updateEvent(
   >,
 ): Promise<{ event: CloudEvent | null; error: string | null }> {
   try {
+    if (!eventId.trim()) {
+      return {
+        event: null,
+        error: 'A valid event ID is required.',
+      };
+    }
+
     const {
       data: { user },
       error: authError,
@@ -362,9 +424,27 @@ export async function updateEvent(
       };
     }
 
+    const safeUpdates = { ...updates };
+
+    if (safeUpdates.event_code !== undefined) {
+      safeUpdates.event_code = safeUpdates.event_code.trim().toUpperCase();
+
+      if (!safeUpdates.event_code) {
+        return { event: null, error: 'Event code is required.' };
+      }
+    }
+
+    if (safeUpdates.title !== undefined) {
+      safeUpdates.title = safeUpdates.title.trim();
+
+      if (!safeUpdates.title) {
+        return { event: null, error: 'Event title is required.' };
+      }
+    }
+
     const { data, error } = await supabase
       .from('events')
-      .update(updates)
+      .update(safeUpdates)
       .eq('id', eventId)
       .eq('created_by', user.id)
       .select('*')
@@ -372,11 +452,7 @@ export async function updateEvent(
 
     if (error) {
       console.error('updateEvent error:', error.message);
-
-      return {
-        event: null,
-        error: error.message,
-      };
+      return { event: null, error: error.message };
     }
 
     if (!data) {
@@ -388,7 +464,7 @@ export async function updateEvent(
     }
 
     return {
-      event: data as CloudEvent,
+      event: normalizeCloudEvent(data),
       error: null,
     };
   } catch (error) {
@@ -399,7 +475,7 @@ export async function updateEvent(
       error:
         error instanceof Error
           ? error.message
-          : 'Failed to update event.',
+          : 'Failed to update the event.',
     };
   }
 }

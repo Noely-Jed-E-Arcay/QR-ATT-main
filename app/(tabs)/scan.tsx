@@ -8,35 +8,88 @@ import {
   StyleSheet,
   Text,
   View,
-  Pressable,
   StatusBar,
 } from 'react-native';
+import { Redirect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import AppButton from '@/components/AppButton';
 import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
+import { getProfile, type Role } from '@/lib/profiles';
 import { registerAttendance } from '@/lib/attendance';
 
+type RoleStatus = 'loading' | 'student' | 'denied';
+
 export default function ScanScreen() {
+  const { user, loading: authLoading } = useAuth();
+
+  const [roleStatus, setRoleStatus] = useState<RoleStatus>('loading');
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
-  const [lastData, setLastData] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const { user } = useAuth();
-
-  // Animated scanner line
   const scanLinePosition = useRef(new Animated.Value(0)).current;
-  const scanAnimation = useRef<Animated.CompositeAnimation | null>(null);
+  const qrPulse = useRef(new Animated.Value(1)).current;
 
+  const scanAnimation =
+    useRef<Animated.CompositeAnimation | null>(null);
+  const qrPulseAnimation =
+    useRef<Animated.CompositeAnimation | null>(null);
+
+  // Fixing: verify the role against the Supabase profiles table.
   useEffect(() => {
-    if (!scanned && permission?.granted) {
+    let cancelled = false;
+
+    async function verifyStudentRole() {
+      if (authLoading) {
+        setRoleStatus('loading');
+        return;
+      }
+
+      if (!user?.id) {
+        setRoleStatus('denied');
+        return;
+      }
+
+      setRoleStatus('loading');
+
+      try {
+        const profile = await getProfile(user.id);
+
+        if (cancelled) return;
+
+        const role: Role | null = profile?.role ?? null;
+
+        setRoleStatus(role === 'student' ? 'student' : 'denied');
+      } catch (error) {
+        console.error('Scanner role verification failed:', error);
+
+        if (!cancelled) {
+          setRoleStatus('denied');
+        }
+      }
+    }
+
+    void verifyStudentRole();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, authLoading]);
+
+  // Animate the horizontal scan line only for verified students.
+  useEffect(() => {
+    if (
+      roleStatus === 'student' &&
+      !scanned &&
+      permission?.granted
+    ) {
       scanLinePosition.setValue(0);
 
-      scanAnimation.current = Animated.loop(
+      const animation = Animated.loop(
         Animated.sequence([
           Animated.timing(scanLinePosition, {
             toValue: 1,
@@ -50,10 +103,11 @@ export default function ScanScreen() {
             easing: Easing.inOut(Easing.ease),
             useNativeDriver: true,
           }),
-        ])
+        ]),
       );
 
-      scanAnimation.current.start();
+      scanAnimation.current = animation;
+      animation.start();
     } else {
       scanAnimation.current?.stop();
     }
@@ -61,7 +115,56 @@ export default function ScanScreen() {
     return () => {
       scanAnimation.current?.stop();
     };
-  }, [scanned, permission?.granted, scanLinePosition]);
+  }, [
+    roleStatus,
+    scanned,
+    permission?.granted,
+    scanLinePosition,
+  ]);
+
+  // Fixing: pulse the QR icon while the scanner is ready.
+  useEffect(() => {
+    if (
+      roleStatus !== 'student' ||
+      scanned ||
+      !permission?.granted
+    ) {
+      qrPulseAnimation.current?.stop();
+      qrPulse.setValue(1);
+      return;
+    }
+
+    qrPulse.setValue(1);
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(qrPulse, {
+          toValue: 1.14,
+          duration: 800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(qrPulse, {
+          toValue: 1,
+          duration: 800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    qrPulseAnimation.current = animation;
+    animation.start();
+
+    return () => {
+      animation.stop();
+    };
+  }, [
+    roleStatus,
+    scanned,
+    permission?.granted,
+    qrPulse,
+  ]);
 
   const animatedLineTranslateY = scanLinePosition.interpolate({
     inputRange: [0, 1],
@@ -73,10 +176,15 @@ export default function ScanScreen() {
   }: {
     data: string;
   }) => {
-    if (scanned || loading) return;
+    if (
+      roleStatus !== 'student' ||
+      scanned ||
+      loading
+    ) {
+      return;
+    }
 
     setScanned(true);
-    setLastData(data);
     setMessage(null);
     setLoading(true);
 
@@ -87,11 +195,23 @@ export default function ScanScreen() {
         return;
       }
 
+      // Verify the student's database role again before registration.
+      const profile = await getProfile(user.id);
+
+      if (profile?.role !== 'student') {
+        setSuccess(false);
+        setMessage(
+          'Your student account could not be verified. Please sign in again or contact your administrator.',
+        );
+        return;
+      }
+
       const result = await registerAttendance(data, user.id);
 
       setMessage(result.message);
       setSuccess(result.success);
-    } catch {
+    } catch (error) {
+      console.error('Attendance registration failed:', error);
       setSuccess(false);
       setMessage('Something went wrong. Please try scanning again.');
     } finally {
@@ -101,11 +221,27 @@ export default function ScanScreen() {
 
   const handleScanAgain = () => {
     setScanned(false);
-    setLastData(null);
     setMessage(null);
     setSuccess(false);
     setLoading(false);
   };
+
+  // Wait for authentication and database role verification.
+  if (authLoading || roleStatus === 'loading') {
+    return (
+      <View style={styles.permissionContainer}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.permissionSubtitle}>
+          Verifying your student account...
+        </Text>
+      </View>
+    );
+  }
+
+  // Keep unauthenticated users and non-students out of the scanner.
+  if (!user || roleStatus !== 'student') {
+    return <Redirect href="/(tabs)" />;
+  }
 
   if (!permission) {
     return (
@@ -165,7 +301,6 @@ export default function ScanScreen() {
         }
       />
 
-      {/* Dark camera overlay */}
       <View style={styles.darkOverlay} />
 
       {/* Top heading */}
@@ -207,13 +342,18 @@ export default function ScanScreen() {
 
           {!scanned && (
             <View style={styles.qrPlaceholder}>
-              <Ionicons
-                name="qr-code-outline"
-                size={76}
-                color="rgba(255,255,255,0.85)"
-              />
+              <Animated.View
+                style={{
+                  transform: [{ scale: qrPulse }],
+                }}
+              >
+                <Ionicons
+                  name="qr-code-outline"
+                  size={76}
+                  color="rgba(255,255,255,0.85)"
+                />
+              </Animated.View>
 
-              {/* Animated scanning line */}
               <Animated.View
                 style={[
                   styles.scanLine,
@@ -371,7 +511,6 @@ export default function ScanScreen() {
     </View>
   );
 }
-
 
 const styles = StyleSheet.create({
   container: {
@@ -550,7 +689,6 @@ const styles = StyleSheet.create({
     maxWidth: 300,
   },
 
-  // Compact bottom information card
   bottomCard: {
     position: 'absolute',
     left: 20,
@@ -600,7 +738,7 @@ const styles = StyleSheet.create({
 
   divider: {
     height: 1,
-    backgroundColor: COLORS.border,
+    backgroundColor: '#E8D5C4',
     marginVertical: 10,
   },
 

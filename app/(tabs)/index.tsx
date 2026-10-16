@@ -113,17 +113,25 @@ export default function Index() {
         );
       }
 
-      // Fixing: show the nearest upcoming event first.
+      // Fixing: sort events by scheduled date AND time, newest first.
+      // Events without a valid start time are placed at the bottom.
       const sortedEvents = [...(eventResult.events ?? [])].sort(
         (a, b) => {
           const dateA = a.start_time
             ? new Date(a.start_time).getTime()
-            : Number.POSITIVE_INFINITY;
+            : Number.NEGATIVE_INFINITY;
           const dateB = b.start_time
             ? new Date(b.start_time).getTime()
-            : Number.POSITIVE_INFINITY;
+            : Number.NEGATIVE_INFINITY;
 
-          return dateA - dateB;
+          const validDateA = Number.isNaN(dateA)
+            ? Number.NEGATIVE_INFINITY
+            : dateA;
+          const validDateB = Number.isNaN(dateB)
+            ? Number.NEGATIVE_INFINITY
+            : dateB;
+
+          return validDateB - validDateA;
         },
       );
 
@@ -264,6 +272,7 @@ export default function Index() {
     }
   };
 
+  // Fixing: the dashboard summary uses the latest scheduled event.
   const nextEvent = events[0];
 
   const unreadCount = announcements.filter(
@@ -274,6 +283,40 @@ export default function Index() {
   const visibleAnnouncements = showAllAnnouncements
     ? announcements
     : announcements.slice(0, ANNOUNCEMENT_PREVIEW_LIMIT);
+
+  const quickActionTitle = isAdministrator
+    ? 'Admin Control Center'
+    : isTeacher
+      ? 'Event QR Management'
+      : 'Scan Event QR Code';
+
+  const quickActionDescription = isAdministrator
+    ? 'Manage users, school events, attendance, and reports from your admin dashboard.'
+    : isTeacher
+      ? 'Manage your event QR codes.'
+      : 'Record attendance at school activities.';
+
+  const quickActionButtonTitle = isAdministrator
+    ? 'Open Admin Dashboard'
+    : isTeacher
+      ? 'Manage Events'
+      : 'Scan QR Code';
+
+  const quickActionIcon = isAdministrator
+    ? 'shield-checkmark-outline'
+    : isTeacher
+      ? 'calendar-outline'
+      : 'qr-code-outline';
+
+  const handleQuickAction = () => {
+    if (isAdministrator) {
+      router.push('/administrator');
+    } else if (isTeacher) {
+      router.push('/teacher');
+    } else {
+      router.push('/scan');
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -328,14 +371,14 @@ export default function Index() {
           )}
         </View>
 
-        {/* QUICK ACTION */}
+        {/* ROLE-BASED QUICK ACTION */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Quick Action</Text>
 
           <View style={styles.scanCard}>
             <View style={styles.scanIconContainer}>
               <Ionicons
-                name="qr-code-outline"
+                name={quickActionIcon}
                 size={28}
                 color={COLORS.textPrimary}
               />
@@ -343,40 +386,20 @@ export default function Index() {
 
             <View style={styles.scanTextContainer}>
               <Text style={styles.scanTitle}>
-                {isTeacher
-                  ? 'Event QR Management'
-                  : isAdministrator
-                    ? 'Attendance Access'
-                    : 'Scan Event QR Code'}
+                {quickActionTitle}
               </Text>
 
               <Text style={styles.scanDescription}>
-                {isTeacher
-                  ? 'Manage your event QR codes.'
-                  : isAdministrator
-                    ? 'Open the attendance scanner.'
-                    : 'Record attendance at school activities.'}
+                {quickActionDescription}
               </Text>
             </View>
           </View>
 
           <AppButton
             theme="primary"
-            title={
-              isTeacher
-                ? 'Manage Events'
-                : isAdministrator
-                  ? 'Open Attendance Scanner'
-                  : 'Scan QR Code'
-            }
-            icon={isTeacher ? 'calendar-outline' : 'qr-code-outline'}
-            onPress={() => {
-              if (isTeacher) {
-                router.push('/teacher');
-              } else {
-                router.push('/scan');
-              }
-            }}
+            title={quickActionButtonTitle}
+            icon={quickActionIcon}
+            onPress={handleQuickAction}
           />
         </View>
 
@@ -395,14 +418,6 @@ export default function Index() {
               <>
                 <ShortcutCard
                   compact={isSmallScreen}
-                  icon="shield-checkmark-outline"
-                  title="Admin Dashboard"
-                  description="Manage school activities"
-                  onPress={() => router.push('/administrator')}
-                />
-
-                <ShortcutCard
-                  compact={isSmallScreen}
                   icon="megaphone-outline"
                   title="Announcements"
                   description="Create and publish school notices"
@@ -417,14 +432,6 @@ export default function Index() {
                   title="Attendance History"
                   description="Review attendance records"
                   onPress={() => router.push('/history')}
-                />
-
-                <ShortcutCard
-                  compact={isSmallScreen}
-                  icon="calendar-outline"
-                  title="School Events"
-                  description="Access event management"
-                  onPress={openEvents}
                 />
 
                 <ShortcutCard
@@ -453,14 +460,6 @@ export default function Index() {
                   onPress={() =>
                     router.push('/administrator/announcements')
                   }
-                />
-
-                <ShortcutCard
-                  compact={isSmallScreen}
-                  icon="qr-code-outline"
-                  title="QR Scanner"
-                  description="Scan an event QR code"
-                  onPress={() => router.push('/scan')}
                 />
 
                 <ShortcutCard
@@ -593,7 +592,7 @@ export default function Index() {
                         color={COLORS.textSecondary}
                       />
                       <Text style={styles.nextEventText}>
-                        Next: {nextEvent.title}
+                        Latest scheduled event: {nextEvent.title}
                       </Text>
                     </View>
 

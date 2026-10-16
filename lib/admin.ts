@@ -1,5 +1,10 @@
+
 import { supabase } from './supabase';
 import type { Role } from './profiles';
+
+// Fixing: Use the existing events.status column.
+// Do not use is_close or is_closed.
+export type EventStatus = 'open' | 'closed';
 
 export type AdminUser = {
   id: string;
@@ -16,8 +21,9 @@ export type AdminEvent = {
   title: string;
   start_time: string | null;
   end_time: string | null;
-  created_by: string;
+  created_by: string | null;
   created_at: string;
+  status: EventStatus;
 };
 
 export type AdminAttendance = {
@@ -73,10 +79,6 @@ function message(error: { message?: string } | null) {
   return error?.message ?? 'An unexpected database error occurred.';
 }
 
-/**
- * Convert database roles into the application's role format.
- * The database may use "administrator", while the app uses "admin".
- */
 function normalizeRole(value: string): Role | null {
   if (value === 'student' || value === 'teacher') {
     return value;
@@ -89,22 +91,14 @@ function normalizeRole(value: string): Role | null {
   return null;
 }
 
-/**
- * Convert the application role into the database role.
- *
- * This assumes your profiles_role_check constraint accepts
- * "administrator" rather than "admin".
- */
-function toDatabaseRole(
-  role: AdminUser['role'],
-): string {
+function toDatabaseRole(role: AdminUser['role']): string {
   return role === 'admin' ? 'admin' : role;
 }
 
-/**
- * Extract related records returned by Supabase.
- * Relationships may be represented as an object or an array.
- */
+function normalizeEventStatus(value: unknown): EventStatus {
+  return value === 'closed' ? 'closed' : 'open';
+}
+
 function firstRelation<T>(
   value: T | T[] | null | undefined
 ): T | null {
@@ -115,10 +109,6 @@ function firstRelation<T>(
   return value ?? null;
 }
 
-/**
- * Convert a Supabase attendance row into the format
- * used by the administrator screens.
- */
 function mapAttendance(row: RawAttendanceRow): AdminAttendance {
   const profile = firstRelation(row.profiles);
   const event = firstRelation(row.events);
@@ -135,36 +125,37 @@ function mapAttendance(row: RawAttendanceRow): AdminAttendance {
   };
 }
 
-/**
- * Validate an event's required information and schedule.
- */
 function validateEvent(input: {
   event_code: string;
   title: string;
   start_time: string | null;
   end_time: string | null;
 }): string | null {
-  if (!input.event_code.trim()) {
-    return 'Event code is required.';
-  }
+  const eventCode = input.event_code.trim();
+  const title = input.title.trim();
 
-  if (!input.title.trim()) {
-    return 'Event title is required.';
-  }
+  if (!eventCode) return 'Event code is required.';
+  if (!title) return 'Event title is required.';
 
-  if (input.event_code.trim().length > 50) {
+  if (eventCode.length > 50) {
     return 'Event code cannot exceed 50 characters.';
   }
 
-  if (input.title.trim().length > 150) {
+  if (title.length > 150) {
     return 'Event title cannot exceed 150 characters.';
   }
 
-  if (input.start_time && !Number.isFinite(Date.parse(input.start_time))) {
+  if (
+    input.start_time &&
+    !Number.isFinite(Date.parse(input.start_time))
+  ) {
     return 'Please provide a valid event start time.';
   }
 
-  if (input.end_time && !Number.isFinite(Date.parse(input.end_time))) {
+  if (
+    input.end_time &&
+    !Number.isFinite(Date.parse(input.end_time))
+  ) {
     return 'Please provide a valid event end time.';
   }
 
@@ -177,9 +168,22 @@ function validateEvent(input: {
   return null;
 }
 
-/**
- * Retrieve all users for administrator user management.
- */
+async function requireSignedInUser(): Promise<{
+  id: string | null;
+  error: string | null;
+}> {
+  const { data, error } = await supabase.auth.getUser();
+
+  if (error || !data.user) {
+    return {
+      id: null,
+      error: 'You must be signed in to perform this action.',
+    };
+  }
+
+  return { id: data.user.id, error: null };
+}
+
 export async function getAdminUsers(): Promise<{
   data: AdminUser[];
   error: string | null;
@@ -189,24 +193,15 @@ export async function getAdminUsers(): Promise<{
     .select('id, email, full_name, role, created_at, updated_at')
     .order('created_at', { ascending: false });
 
-  if (error) {
-    return { data: [], error: message(error) };
-  }
+  if (error) return { data: [], error: message(error) };
 
-  if (!data) {
-    return { data: [], error: null };
-  }
-
-  const rows = data as unknown as RawAdminUser[];
+  const rows = (data ?? []) as unknown as RawAdminUser[];
   const users: AdminUser[] = [];
 
   for (const row of rows) {
     const role = normalizeRole(row.role);
 
-    if (!role) {
-      console.warn('Skipping a profile with an unrecognized role.');
-      continue;
-    }
+    if (!role) continue;
 
     users.push({
       id: row.id,
@@ -221,10 +216,6 @@ export async function getAdminUsers(): Promise<{
   return { data: users, error: null };
 }
 
-/**
- * Update a user's name and role.
- * Administrators cannot edit their own account through this function.
- */
 export async function updateAdminUser(
   userId: string,
   updates: { full_name: string; role: Role }
@@ -235,22 +226,19 @@ export async function updateAdminUser(
 
   const fullName = updates.full_name.trim();
 
-  if (!fullName) {
-    return { error: 'Full name is required.' };
-  }
+  if (!fullName) return { error: 'Full name is required.' };
 
   if (fullName.length > 150) {
     return { error: 'Full name cannot exceed 150 characters.' };
   }
 
-  const { data: authData, error: authError } =
-    await supabase.auth.getUser();
+  const auth = await requireSignedInUser();
 
-  if (authError || !authData.user) {
-    return { error: 'You must be signed in to manage users.' };
+  if (auth.error || !auth.id) {
+    return { error: auth.error };
   }
 
-  if (authData.user.id === userId) {
+  if (auth.id === userId) {
     return {
       error: 'You cannot modify your own administrator account here.',
     };
@@ -267,9 +255,6 @@ export async function updateAdminUser(
   return { error: error ? message(error) : null };
 }
 
-/**
- * Retrieve all events.
- */
 export async function getAdminEvents(): Promise<{
   data: AdminEvent[];
   error: string | null;
@@ -277,23 +262,26 @@ export async function getAdminEvents(): Promise<{
   const { data, error } = await supabase
     .from('events')
     .select(
-      'id, event_code, title, start_time, end_time, created_by, created_at'
+      'id, event_code, title, start_time, end_time, created_by, created_at, status'
     )
     .order('created_at', { ascending: false });
 
-  if (error) {
-    return { data: [], error: message(error) };
-  }
+  if (error) return { data: [], error: message(error) };
 
-  return {
-    data: (data ?? []) as AdminEvent[],
-    error: null,
-  };
+  const events: AdminEvent[] = (data ?? []).map((row) => ({
+    id: row.id,
+    event_code: row.event_code,
+    title: row.title,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    created_by: row.created_by,
+    created_at: row.created_at,
+    status: normalizeEventStatus(row.status),
+  }));
+
+  return { data: events, error: null };
 }
 
-/**
- * Create an event under the currently signed-in account.
- */
 export async function createAdminEvent(input: {
   event_code: string;
   title: string;
@@ -302,31 +290,27 @@ export async function createAdminEvent(input: {
 }): Promise<{ error: string | null }> {
   const validationError = validateEvent(input);
 
-  if (validationError) {
-    return { error: validationError };
+  if (validationError) return { error: validationError };
+
+  const auth = await requireSignedInUser();
+
+  if (auth.error || !auth.id) {
+    return { error: auth.error };
   }
 
-  const { data: authData, error: authError } =
-    await supabase.auth.getUser();
-
-  if (authError || !authData.user) {
-    return { error: 'You are not signed in.' };
-  }
-
+  // Fixing: Insert status, never is_close.
   const { error } = await supabase.from('events').insert({
     event_code: input.event_code.trim().toUpperCase(),
     title: input.title.trim(),
     start_time: input.start_time,
     end_time: input.end_time,
-    created_by: authData.user.id,
+    created_by: auth.id,
+    status: 'open',
   });
 
   return { error: error ? message(error) : null };
 }
 
-/**
- * Update an existing event.
- */
 export async function updateAdminEvent(
   eventId: string,
   updates: {
@@ -342,9 +326,7 @@ export async function updateAdminEvent(
 
   const validationError = validateEvent(updates);
 
-  if (validationError) {
-    return { error: validationError };
-  }
+  if (validationError) return { error: validationError };
 
   const { error } = await supabase
     .from('events')
@@ -359,9 +341,32 @@ export async function updateAdminEvent(
   return { error: error ? message(error) : null };
 }
 
-/**
- * Delete an event.
- */
+export async function setAdminEventStatus(
+  eventId: string,
+  status: EventStatus
+): Promise<{ error: string | null }> {
+  if (!eventId.trim()) {
+    return { error: 'A valid event ID is required.' };
+  }
+
+  if (status !== 'open' && status !== 'closed') {
+    return { error: 'Invalid event status.' };
+  }
+
+  const auth = await requireSignedInUser();
+
+  if (auth.error || !auth.id) {
+    return { error: auth.error };
+  }
+
+  const { error } = await supabase
+    .from('events')
+    .update({ status })
+    .eq('id', eventId);
+
+  return { error: error ? message(error) : null };
+}
+
 export async function deleteAdminEvent(
   eventId: string
 ): Promise<{ error: string | null }> {
@@ -377,9 +382,6 @@ export async function deleteAdminEvent(
   return { error: error ? message(error) : null };
 }
 
-/**
- * Retrieve attendance records with their related student and event.
- */
 export async function getAdminAttendance(): Promise<{
   data: AdminAttendance[];
   error: string | null;
@@ -396,21 +398,13 @@ export async function getAdminAttendance(): Promise<{
     `)
     .order('scanned_at', { ascending: false });
 
-  if (error) {
-    return { data: [], error: message(error) };
-  }
+  if (error) return { data: [], error: message(error) };
 
   const rows = (data ?? []) as unknown as RawAttendanceRow[];
 
-  return {
-    data: rows.map(mapAttendance),
-    error: null,
-  };
+  return { data: rows.map(mapAttendance), error: null };
 }
 
-/**
- * Update an attendance record's scan timestamp.
- */
 export async function updateAttendanceRecord(
   attendanceId: string,
   scannedAt: string
@@ -431,9 +425,6 @@ export async function updateAttendanceRecord(
   return { error: error ? message(error) : null };
 }
 
-/**
- * Delete an attendance record.
- */
 export async function deleteAttendanceRecord(
   attendanceId: string
 ): Promise<{ error: string | null }> {
@@ -449,9 +440,6 @@ export async function deleteAttendanceRecord(
   return { error: error ? message(error) : null };
 }
 
-/**
- * Retrieve summary counts and the latest attendance records.
- */
 export async function getAdminDashboard(): Promise<{
   data: AdminDashboard | null;
   error: string | null;
@@ -503,7 +491,8 @@ export async function getAdminDashboard(): Promise<{
   }
 
   const users = (usersResult.data ?? []) as unknown as RawRoleRow[];
-  const recentRows = (recentResult.data ?? []) as unknown as RawAttendanceRow[];
+  const recentRows =
+    (recentResult.data ?? []) as unknown as RawAttendanceRow[];
 
   const studentCount = users.filter(
     (user) => user.role === 'student'
@@ -517,8 +506,6 @@ export async function getAdminDashboard(): Promise<{
     (user) => user.role === 'admin' || user.role === 'administrator'
   ).length;
 
-  const recentAttendance = recentRows.map(mapAttendance);
-
   return {
     data: {
       userCount: users.length,
@@ -527,7 +514,7 @@ export async function getAdminDashboard(): Promise<{
       administratorCount,
       eventCount: eventsResult.count ?? 0,
       attendanceCount: attendanceResult.count ?? 0,
-      recentAttendance,
+      recentAttendance: recentRows.map(mapAttendance),
     },
     error: null,
   };

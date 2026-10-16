@@ -1,6 +1,5 @@
 
 import { parseQRPayload } from './qr';
-import { getEventByCode } from './events';
 import { supabase } from './supabase';
 
 export type RegisterResult = {
@@ -16,6 +15,27 @@ export type AttendanceRecord = {
   scannedAt: string;
 };
 
+type EventForAttendance = {
+  id: string;
+  event_code: string;
+  title: string;
+  start_time: string | null;
+  end_time: string | null;
+  status: string;
+};
+
+function isValidDate(value: string | null): number | null {
+  if (!value) return null;
+
+  const timestamp = new Date(value).getTime();
+
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+/**
+ * Fixing: validate attendance against the current database event.
+ * QR payload dates alone are not authoritative.
+ */
 export async function registerAttendance(
   rawPayload: string,
   studentId: string
@@ -28,7 +48,6 @@ export async function registerAttendance(
       };
     }
 
-    // Validate the QR code.
     const parsed = parseQRPayload(rawPayload);
 
     if (!parsed.ok) {
@@ -39,74 +58,15 @@ export async function registerAttendance(
     }
 
     const payload = parsed.payload;
+    const eventCode = payload.event.trim().toUpperCase();
 
-    // Validate the event schedule, if provided in the QR code.
-    const now = Date.now();
-
-    const start = payload.start
-      ? new Date(payload.start).getTime()
-      : null;
-
-    const end = payload.end
-      ? new Date(payload.end).getTime()
-      : null;
-
-    if (start !== null && !Number.isFinite(start)) {
+    if (!eventCode) {
       return {
         success: false,
-        message: 'Invalid event start time in QR code.',
+        message: 'The QR code does not contain a valid event code.',
       };
     }
 
-    if (end !== null && !Number.isFinite(end)) {
-      return {
-        success: false,
-        message: 'Invalid event end time in QR code.',
-      };
-    }
-
-    if (start !== null && now < start) {
-      return {
-        success: false,
-        message: 'Event has not started yet.',
-      };
-    }
-
-    if (end !== null && now > end) {
-      return {
-        success: false,
-        message: 'Event has already ended.',
-      };
-    }
-
-    // Find the existing event using its event code.
-    const {
-      event: foundEvent,
-      error: lookupError,
-    } = await getEventByCode(payload.event);
-
-    if (lookupError || !foundEvent) {
-      return {
-        success: false,
-        message:
-          lookupError === 'Event not found.'
-            ? 'Event not found. Please scan a valid event QR code.'
-            : lookupError ?? 'Could not find the event.',
-      };
-    }
-
-    // Use the database event ID, not the QR event code.
-    const eventId = foundEvent.id;
-    const eventTitle = foundEvent.title;
-
-    if (!eventId) {
-      return {
-        success: false,
-        message: 'The event has no valid database ID.',
-      };
-    }
-
-    // Confirm that the signed-in student matches the supplied ID.
     const {
       data: { user },
       error: authError,
@@ -119,12 +79,128 @@ export async function registerAttendance(
       };
     }
 
-    // Record attendance for the existing event.
+    // Look up the event's current database status and schedule.
+    const { data: eventData, error: eventError } = await supabase
+      .from('events')
+      .select(
+        'id, event_code, title, start_time, end_time, status'
+      )
+      .eq('event_code', eventCode)
+      .maybeSingle();
+
+    if (eventError) {
+      console.error('Event lookup failed:', eventError.message);
+
+      return {
+        success: false,
+        message: 'Could not verify the event. Please try again.',
+      };
+    }
+
+    if (!eventData) {
+      return {
+        success: false,
+        message: 'Event not found. Please scan a valid event QR code.',
+      };
+    }
+
+    const event = eventData as EventForAttendance;
+    const eventTitle = event.title;
+
+    // Closed status takes priority over schedule validation.
+    if (event.status !== 'open') {
+      return {
+        success: false,
+        message: 'This event is closed. Attendance registration is no longer available.',
+        eventTitle,
+      };
+    }
+
+    const now = Date.now();
+
+    // Use the database schedule as the source of truth.
+    const start = isValidDate(event.start_time);
+    const end = isValidDate(event.end_time);
+
+    if (event.start_time && start === null) {
+      return {
+        success: false,
+        message: 'The event has an invalid start time. Please contact the administrator.',
+        eventTitle,
+      };
+    }
+
+    if (event.end_time && end === null) {
+      return {
+        success: false,
+        message: 'The event has an invalid end time. Please contact the administrator.',
+        eventTitle,
+      };
+    }
+
+    if (start !== null && now < start) {
+      return {
+        success: false,
+        message: 'Event has not started yet.',
+        eventTitle,
+      };
+    }
+
+    if (end !== null && now > end) {
+      return {
+        success: false,
+        message: 'Event has already ended.',
+        eventTitle,
+      };
+    }
+
+    // Retain QR schedule validation when the QR includes dates.
+    const qrStart = payload.start
+      ? new Date(payload.start).getTime()
+      : null;
+
+    const qrEnd = payload.end
+      ? new Date(payload.end).getTime()
+      : null;
+
+    if (qrStart !== null && !Number.isFinite(qrStart)) {
+      return {
+        success: false,
+        message: 'Invalid event start time in QR code.',
+        eventTitle,
+      };
+    }
+
+    if (qrEnd !== null && !Number.isFinite(qrEnd)) {
+      return {
+        success: false,
+        message: 'Invalid event end time in QR code.',
+        eventTitle,
+      };
+    }
+
+    if (qrStart !== null && now < qrStart) {
+      return {
+        success: false,
+        message: 'Event has not started yet.',
+        eventTitle,
+      };
+    }
+
+    if (qrEnd !== null && now > qrEnd) {
+      return {
+        success: false,
+        message: 'Event has already ended.',
+        eventTitle,
+      };
+    }
+
+    // Register attendance using the database event ID.
     const { error: attendanceError } = await supabase
       .from('attendance')
       .insert({
         student_id: studentId,
-        event_id: eventId,
+        event_id: event.id,
       });
 
     if (attendanceError) {
@@ -136,6 +212,17 @@ export async function registerAttendance(
         };
       }
 
+      if (
+        attendanceError.code === 'P0001' ||
+        attendanceError.message.toLowerCase().includes('event is closed')
+      ) {
+        return {
+          success: false,
+          message: 'This event is closed. Attendance registration is no longer available.',
+          eventTitle,
+        };
+      }
+
       console.error(
         'Attendance registration failed:',
         attendanceError
@@ -143,7 +230,8 @@ export async function registerAttendance(
 
       return {
         success: false,
-        message: attendanceError.message,
+        message: 'Could not record attendance. Please try again.',
+        eventTitle,
       };
     }
 
@@ -188,15 +276,22 @@ export async function getAttendanceHistory(
         'Failed to load attendance history:',
         error?.message
       );
+
       return [];
     }
 
-    return data.map((row: any) => ({
-      id: row.id,
-      eventId: row.events?.event_code ?? '',
-      eventTitle: row.events?.title ?? 'Unknown event',
-      scannedAt: row.scanned_at,
-    }));
+    return data.map((row: any) => {
+      const event = Array.isArray(row.events)
+        ? row.events[0]
+        : row.events;
+
+      return {
+        id: row.id,
+        eventId: event?.event_code ?? '',
+        eventTitle: event?.title ?? 'Unknown event',
+        scannedAt: row.scanned_at,
+      };
+    });
   } catch (error) {
     console.error('getAttendanceHistory failed:', error);
     return [];
@@ -237,6 +332,10 @@ export async function getTeacherEventAttendance(
   teacherId: string
 ): Promise<TeacherEventAttendance[]> {
   try {
+    if (!teacherId) {
+      return [];
+    }
+
     const { data: events, error: eventError } = await supabase
       .from('events')
       .select(`
@@ -256,14 +355,15 @@ export async function getTeacherEventAttendance(
         'Error loading events:',
         eventError.message
       );
+
       return [];
     }
 
-    if (!events || events.length === 0) {
+    if (!events?.length) {
       return [];
     }
 
-    const eventIds = events.map((event: any) => event.id);
+    const eventIds = events.map((event) => event.id);
 
     const {
       data: attendance,
@@ -287,13 +387,24 @@ export async function getTeacherEventAttendance(
         'Error loading attendance:',
         attendanceError.message
       );
+
+      return events.map((event) => ({
+        eventId: event.id,
+        eventCode: event.event_code,
+        title: event.title,
+        location: event.location ?? null,
+        startTime: event.start_time,
+        endTime: event.end_time,
+        attendeeCount: 0,
+        attendees: [],
+      }));
     }
 
     const attendanceRows = attendance ?? [];
 
-    return events.map((event: any) => {
+    return events.map((event) => {
       const rows = attendanceRows.filter(
-        (row: any) => row.event_id === event.id
+        (row) => row.event_id === event.id
       );
 
       return {
@@ -304,11 +415,17 @@ export async function getTeacherEventAttendance(
         startTime: event.start_time,
         endTime: event.end_time,
         attendeeCount: rows.length,
-        attendees: rows.map((row: any) => ({
-          studentId: row.student_id,
-          scannedAt: row.scanned_at,
-          studentName: row.profiles?.full_name ?? null,
-        })),
+        attendees: rows.map((row: any) => {
+          const profile = Array.isArray(row.profiles)
+            ? row.profiles[0]
+            : row.profiles;
+
+          return {
+            studentId: row.student_id,
+            scannedAt: row.scanned_at,
+            studentName: profile?.full_name ?? null,
+          };
+        }),
       };
     });
   } catch (error) {
@@ -325,6 +442,10 @@ export async function getTeacherEventSummary(
   teacherId: string
 ): Promise<TeacherEventSummary[]> {
   try {
+    if (!teacherId) {
+      return [];
+    }
+
     const { data: events, error: eventError } = await supabase
       .from('events')
       .select('id, event_code, title, created_at')
@@ -336,20 +457,23 @@ export async function getTeacherEventSummary(
         'Error loading event summaries:',
         eventError?.message
       );
+
       return [];
     }
 
-    if (events.length === 0) {
+    if (!events.length) {
       return [];
     }
 
-    const eventIds = events.map((event: any) => event.id);
+    const eventIds = events.map((event) => event.id);
 
-    const { data: attendanceRows, error: attendanceError } =
-      await supabase
-        .from('attendance')
-        .select('event_id')
-        .in('event_id', eventIds);
+    const {
+      data: attendanceRows,
+      error: attendanceError,
+    } = await supabase
+      .from('attendance')
+      .select('event_id')
+      .in('event_id', eventIds);
 
     if (attendanceError) {
       console.error(
@@ -357,7 +481,7 @@ export async function getTeacherEventSummary(
         attendanceError.message
       );
 
-      return events.map((event: any) => ({
+      return events.map((event) => ({
         eventId: event.id,
         eventCode: event.event_code,
         title: event.title,
@@ -367,11 +491,11 @@ export async function getTeacherEventSummary(
 
     const counts: Record<string, number> = {};
 
-    (attendanceRows ?? []).forEach((row: any) => {
+    (attendanceRows ?? []).forEach((row) => {
       counts[row.event_id] = (counts[row.event_id] ?? 0) + 1;
     });
 
-    return events.map((event: any) => ({
+    return events.map((event) => ({
       eventId: event.id,
       eventCode: event.event_code,
       title: event.title,

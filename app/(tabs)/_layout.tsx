@@ -3,10 +3,9 @@ import { Tabs, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Animated,
+  Easing,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,66 +14,96 @@ import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
 import { getProfile, type Role } from '@/lib/profiles';
 
-function AnimatedScanIcon({ focused }: { focused: boolean }) {
-  const floatAnim = useRef(new Animated.Value(0)).current;
-  const pulseAnim = useRef(new Animated.Value(0)).current;
+type AnimatedScanIconProps = {
+  color: string;
+  focused: boolean;
+};
+
+function AnimatedScanIcon({
+  color,
+  focused,
+}: AnimatedScanIconProps) {
+  const floatAnimation = useRef(new Animated.Value(0)).current;
+  const pulseAnimation = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const floating = Animated.loop(
+    const float = Animated.loop(
       Animated.sequence([
-        Animated.timing(floatAnim, {
-          toValue: -4,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-        Animated.timing(floatAnim, {
-          toValue: 0,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-
-    const pulsing = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
+        Animated.timing(floatAnimation, {
           toValue: 1,
-          duration: 900,
+          duration: 850,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-        Animated.timing(pulseAnim, {
+        Animated.timing(floatAnimation, {
           toValue: 0,
-          duration: 900,
+          duration: 850,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
       ]),
     );
 
-    floating.start();
-    pulsing.start();
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnimation, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnimation, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    float.start();
+    pulse.start();
 
     return () => {
-      floating.stop();
-      pulsing.stop();
+      float.stop();
+      pulse.stop();
+      floatAnimation.stopAnimation();
+      pulseAnimation.stopAnimation();
     };
-  }, [floatAnim, pulseAnim]);
+  }, [floatAnimation, pulseAnimation]);
 
-  const ringScale = pulseAnim.interpolate({
+  const translateY = floatAnimation.interpolate({
     inputRange: [0, 1],
-    outputRange: [1, 1.3],
+    outputRange: [0, -4],
   });
 
-  const ringOpacity = pulseAnim.interpolate({
+  const scale = floatAnimation.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.4, 0],
+    outputRange: [1, 1.07],
+  });
+
+  const ringScale = pulseAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.85, 1.45],
+  });
+
+  const ringOpacity = pulseAnimation.interpolate({
+    inputRange: [0, 0.15, 1],
+    outputRange: [0.35, 0.2, 0],
   });
 
   return (
-    <View style={styles.scanIconContainer}>
+    <Animated.View
+      style={[
+        styles.scanButtonWrapper,
+        {
+          transform: [{ translateY }, { scale }],
+        },
+      ]}
+    >
       <Animated.View
         pointerEvents="none"
         style={[
-          styles.pulseRing,
+          styles.scanPulseRing,
           {
             opacity: ringOpacity,
             transform: [{ scale: ringScale }],
@@ -82,22 +111,19 @@ function AnimatedScanIcon({ focused }: { focused: boolean }) {
         ]}
       />
 
-      <Animated.View
+      <View
         style={[
-          styles.scanButton,
-          {
-            backgroundColor: COLORS.primary,
-            transform: [{ translateY: floatAnim }],
-          },
+          styles.scanIconContainer,
+          focused && styles.scanIconContainerFocused,
         ]}
       >
         <Ionicons
-          name={focused ? 'scan' : 'qr-code-outline'}
-          size={26}
+          name={focused ? 'qr-code' : 'qr-code-outline'}
           color="#FFFFFF"
+          size={25}
         />
-      </Animated.View>
-    </View>
+      </View>
+    </Animated.View>
   );
 }
 
@@ -135,7 +161,9 @@ export default function TabLayout() {
           }
         })
         .finally(() => {
-          if (active) setRoleLoading(false);
+          if (active) {
+            setRoleLoading(false);
+          }
         });
 
       return () => {
@@ -144,7 +172,8 @@ export default function TabLayout() {
     }, [user]),
   );
 
-  const isStudent = roleLoading || !role || role === 'student';
+  // Fixing: keep Scan hidden while the role loads and for staff.
+  const isStudent = !roleLoading && role === 'student';
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -165,6 +194,7 @@ export default function TabLayout() {
             marginBottom: 6,
             paddingTop: 5,
             paddingBottom: 5,
+            overflow: 'visible',
             elevation: 8,
             shadowColor: '#000000',
             shadowOffset: { width: 0, height: 4 },
@@ -178,6 +208,7 @@ export default function TabLayout() {
           },
           tabBarItemStyle: {
             paddingVertical: 0,
+            overflow: 'visible',
           },
         }}
       >
@@ -216,14 +247,20 @@ export default function TabLayout() {
           options={{
             title: 'Scan',
             tabBarLabel: 'Scan',
-            tabBarIcon: ({ focused }) => (
-              <AnimatedScanIcon focused={focused} />
-            ),
-            tabBarLabelStyle: {
-              fontSize: 9,
-              fontWeight: '700',
-              marginTop: 0,
-            },
+            href: isStudent ? '/scan' : null,
+            tabBarIcon: ({ color, focused }) =>
+              isStudent ? (
+                <AnimatedScanIcon
+                  color={color}
+                  focused={focused}
+                />
+              ) : (
+                <Ionicons
+                  name={focused ? 'scan' : 'qr-code-outline'}
+                  color={color}
+                  size={21}
+                />
+              ),
           }}
         />
 
@@ -274,33 +311,51 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  scanIconContainer: {
+
+  scanButtonWrapper: {
     width: 58,
     height: 58,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: -23,
+    marginTop: -25,
+    zIndex: 10,
   },
-  pulseRing: {
+
+  scanPulseRing: {
     position: 'absolute',
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     borderWidth: 2,
     borderColor: COLORS.primary,
   },
-  scanButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+
+  scanIconContainer: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: COLORS.primary,
     borderWidth: 3,
-    borderColor: COLORS.background,
-    elevation: 6,
+    borderColor: COLORS.card,
+    elevation: 8,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+  },
+
+  scanIconContainerFocused: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: COLORS.primary,
+    borderColor: '#FFFFFF',
+    elevation: 10,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
   },
 });

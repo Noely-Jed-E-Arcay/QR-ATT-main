@@ -254,8 +254,22 @@ export default function TeacherScreen() {
     }, [user, loadEvents]),
   );
 
+  // Fixing: Sort newest scheduled events first.
+  // Missing or invalid start times are placed at the bottom.
   const filteredEvents = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
+
+    const getStartTime = (value: string | null) => {
+      if (!value) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      const timestamp = new Date(value).getTime();
+
+      return Number.isFinite(timestamp)
+        ? timestamp
+        : Number.NEGATIVE_INFINITY;
+    };
 
     return events
       .filter((event) => {
@@ -283,23 +297,7 @@ export default function TeacherScreen() {
         );
       })
       .sort((a, b) => {
-        const aTime = a.start_time
-          ? new Date(a.start_time).getTime()
-          : Number.MAX_SAFE_INTEGER;
-
-        const bTime = b.start_time
-          ? new Date(b.start_time).getTime()
-          : Number.MAX_SAFE_INTEGER;
-
-        const safeATime = Number.isFinite(aTime)
-          ? aTime
-          : Number.MAX_SAFE_INTEGER;
-
-        const safeBTime = Number.isFinite(bTime)
-          ? bTime
-          : Number.MAX_SAFE_INTEGER;
-
-        return safeATime - safeBTime;
+        return getStartTime(b.start_time) - getStartTime(a.start_time);
       });
   }, [events, filter, search, now, attendedEventIds]);
 
@@ -696,7 +694,9 @@ export default function TeacherScreen() {
             size={17}
             color={COLORS.primary}
           />
-          <Text style={styles.reloadLinkText}>Refresh events and attendance</Text>
+          <Text style={styles.reloadLinkText}>
+            Refresh events and attendance
+          </Text>
         </Pressable>
       </ScrollView>
     );

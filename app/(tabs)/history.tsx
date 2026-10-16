@@ -28,7 +28,9 @@ import {
 import {
   deleteEvent,
   getEventsByTeacher,
+  setEventClosed,
   updateEvent,
+  type EventStatus,
 } from '@/lib/events';
 import { getProfile, type Role } from '@/lib/profiles';
 import { buildQRPayload } from '@/lib/qr';
@@ -37,6 +39,7 @@ type HistoryEvent = TeacherEventAttendance & {
   createdAt: string | null;
   location: string | null;
   description: string | null;
+  eventStatus: EventStatus;
 };
 
 type EventGroup = {
@@ -75,7 +78,9 @@ export default function HistoryScreen() {
 
   const [savingEvent, setSavingEvent] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
 
+  // FIXING: Load event data and automatically close expired events.
   const load = useCallback(async () => {
     if (!user) {
       setRole(null);
@@ -110,6 +115,7 @@ export default function HistoryScreen() {
               createdAt: event.created_at ?? null,
               location: event.location ?? null,
               description: event.description ?? null,
+              eventStatus: event.status ?? 'open',
             },
           ])
         );
@@ -131,8 +137,84 @@ export default function HistoryScreen() {
               attendanceData.description ??
               eventMetadata?.description ??
               null,
+            eventStatus: eventMetadata?.eventStatus ?? 'open',
           };
         });
+
+        // FIXING: Persist closed status for events whose scheduled end time
+        // has passed. Only update local state when Supabase confirms success.
+        const now = Date.now();
+        const expiredOpenEvents = merged.filter((event) => {
+          if (event.eventStatus === 'closed' || !event.endTime) {
+            return false;
+          }
+
+          const endTimestamp = new Date(event.endTime).getTime();
+
+          return (
+            Number.isFinite(endTimestamp) &&
+            endTimestamp <= now
+          );
+        });
+
+        if (expiredOpenEvents.length > 0) {
+          const closeResults = await Promise.all(
+            expiredOpenEvents.map(async (event) => {
+              try {
+                const result = await setEventClosed(event.eventId, true);
+
+                if (result.error || !result.event) {
+                  console.error(
+                    `Failed to automatically close event ${event.eventId}:`,
+                    result.error ?? 'No updated event returned.'
+                  );
+
+                  return {
+                    eventId: event.eventId,
+                    success: false,
+                  };
+                }
+
+                return {
+                  eventId: event.eventId,
+                  success: true,
+                };
+              } catch (error) {
+                console.error(
+                  `Failed to automatically close event ${event.eventId}:`,
+                  error
+                );
+
+                return {
+                  eventId: event.eventId,
+                  success: false,
+                };
+              }
+            })
+          );
+
+          const successfullyClosed = new Set(
+            closeResults
+              .filter((result) => result.success)
+              .map((result) => result.eventId)
+          );
+
+          for (const event of merged) {
+            if (successfullyClosed.has(event.eventId)) {
+              event.eventStatus = 'closed';
+            }
+          }
+
+          const failedCount = closeResults.filter(
+            (result) => !result.success
+          ).length;
+
+          if (failedCount > 0) {
+            console.warn(
+              `${failedCount} expired event(s) could not be closed in Supabase.`
+            );
+          }
+        }
 
         merged.sort(
           (a, b) =>
@@ -244,7 +326,7 @@ export default function HistoryScreen() {
     }
   };
 
-  // FIXING: Use the correct updateEvent field names.
+  // FIXING: Save edited event details using the existing database field names.
   const handleSaveEvent = async () => {
     if (!editingEvent || !editTitle.trim()) {
       Alert.alert('Invalid Input', 'Event title is required.');
@@ -305,6 +387,89 @@ export default function HistoryScreen() {
     } finally {
       setSavingEvent(false);
     }
+  };
+
+  // FIXING: Close or reopen an event directly from its History card.
+  const handleToggleEventStatus = (event: HistoryEvent) => {
+    if (updatingStatusId) return;
+
+    const closing = event.eventStatus !== 'closed';
+
+    Alert.alert(
+      closing ? 'Close Event?' : 'Reopen Event?',
+      closing
+        ? `Close "${event.title}"? Students should no longer be able to record attendance for this event.`
+        : `Reopen "${event.title}" so attendance can be recorded again?`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: closing ? 'Close Event' : 'Reopen Event',
+          style: closing ? 'destructive' : 'default',
+          onPress: async () => {
+            setUpdatingStatusId(event.eventId);
+
+            try {
+              const { event: updatedEvent, error } = await setEventClosed(
+                event.eventId,
+                closing
+              );
+
+              if (error || !updatedEvent) {
+                Alert.alert(
+                  'Status Update Failed',
+                  error ?? 'The event status could not be updated.'
+                );
+                return;
+              }
+
+              setTeacherEvents((current) =>
+                current.map((item) =>
+                  item.eventId === event.eventId
+                    ? {
+                        ...item,
+                        eventStatus: updatedEvent.status,
+                      }
+                    : item
+                )
+              );
+
+              setAttendeeEvent((current) =>
+                current?.eventId === event.eventId
+                  ? { ...current, eventStatus: updatedEvent.status }
+                  : current
+              );
+
+              setQrEvent((current) =>
+                current?.eventId === event.eventId
+                  ? { ...current, eventStatus: updatedEvent.status }
+                  : current
+              );
+
+              Alert.alert(
+                'Success',
+                closing
+                  ? 'The event has been closed.'
+                  : 'The event has been reopened.'
+              );
+            } catch (error) {
+              console.error('Event status update failed:', error);
+
+              Alert.alert(
+                'Status Update Failed',
+                error instanceof Error
+                  ? error.message
+                  : 'Unable to update the event status.'
+              );
+            } finally {
+              setUpdatingStatusId(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDeleteEvent = (event: HistoryEvent) => {
@@ -374,7 +539,9 @@ export default function HistoryScreen() {
           <View style={styles.pageHeader}>
             <View>
               <Text style={styles.title}>Attendance History</Text>
-              <Text style={styles.subtitle}>Manage your events</Text>
+              <Text style={styles.subtitle}>
+                {role === 'admin' ? 'Manage events' : 'Manage your events'}
+              </Text>
             </View>
             <Ionicons
               name="calendar-outline"
@@ -510,10 +677,18 @@ export default function HistoryScreen() {
                 )}
 
                 {group.events.map((event) => {
-                  const status = getEventStatus(
+                  const scheduleStatus = getEventStatus(
                     event.startTime,
                     event.endTime
                   );
+
+                  const isClosed = event.eventStatus === 'closed';
+                  const isUpdating = updatingStatusId === event.eventId;
+
+                  // FIXING: A manually closed event must also display Ended.
+                  const displayedStatus = isClosed
+                    ? 'Ended'
+                    : scheduleStatus;
 
                   return (
                     <View key={event.eventId} style={styles.eventCard}>
@@ -594,17 +769,29 @@ export default function HistoryScreen() {
                             {event.attendeeCount}
                           </Text>
                           <Text style={styles.tinyLabel}>attendees</Text>
+
                           <Text
                             style={[
                               styles.status,
-                              status === 'Upcoming'
+                              displayedStatus === 'Upcoming'
                                 ? styles.upcoming
-                                : status === 'Ongoing'
+                                : displayedStatus === 'Ongoing'
                                   ? styles.ongoing
                                   : styles.ended,
                             ]}
                           >
-                            {status}
+                            {displayedStatus}
+                          </Text>
+
+                          <Text
+                            style={[
+                              styles.eventStateBadge,
+                              isClosed
+                                ? styles.closedBadge
+                                : styles.openBadge,
+                            ]}
+                          >
+                            {isClosed ? 'CLOSED' : 'OPEN'}
                           </Text>
                         </View>
                       </Pressable>
@@ -644,6 +831,49 @@ export default function HistoryScreen() {
                           )}
                         </Pressable>
                       </View>
+
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          isClosed
+                            ? `Reopen ${event.title}`
+                            : `Close ${event.title}`
+                        }
+                        disabled={!!updatingStatusId}
+                        style={[
+                          styles.statusToggleButton,
+                          isClosed
+                            ? styles.reopenButton
+                            : styles.closeEventButton,
+                          !!updatingStatusId && styles.disabled,
+                        ]}
+                        onPress={() => handleToggleEventStatus(event)}
+                      >
+                        {isUpdating ? (
+                          <ActivityIndicator
+                            size="small"
+                            color="#FFFFFF"
+                          />
+                        ) : (
+                          <Ionicons
+                            name={
+                              isClosed
+                                ? 'lock-open-outline'
+                                : 'lock-closed-outline'
+                            }
+                            size={17}
+                            color="#FFFFFF"
+                          />
+                        )}
+
+                        <Text style={styles.statusToggleText}>
+                          {isUpdating
+                            ? 'Updating...'
+                            : isClosed
+                              ? 'Reopen Event'
+                              : 'Close Event'}
+                        </Text>
+                      </Pressable>
                     </View>
                   );
                 })}
@@ -731,6 +961,13 @@ export default function HistoryScreen() {
                 subtitle={qrEvent?.title ?? ''}
                 onClose={() => setQrEvent(null)}
               />
+
+              {qrEvent?.eventStatus === 'closed' && (
+                <Text style={styles.closedNotice}>
+                  This event is closed. Attendance scanning should be disabled
+                  by your attendance validation.
+                </Text>
+              )}
 
               <Text style={styles.modalDescription}>
                 Scan this code to record attendance.
@@ -1422,6 +1659,23 @@ const styles = StyleSheet.create({
     color: '#4B5563',
     backgroundColor: '#F3F4F6',
   },
+  eventStateBadge: {
+    fontSize: 9,
+    fontWeight: '800',
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginTop: 5,
+  },
+  openBadge: {
+    color: '#166534',
+    backgroundColor: '#DCFCE7',
+  },
+  closedBadge: {
+    color: '#991B1B',
+    backgroundColor: '#FEE2E2',
+  },
   actions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1452,6 +1706,36 @@ const styles = StyleSheet.create({
     flex: 0,
     width: 36,
     backgroundColor: '#FDECEC',
+  },
+  statusToggleButton: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    marginTop: 10,
+    borderRadius: 9,
+  },
+  closeEventButton: {
+    backgroundColor: '#B3261E',
+  },
+  reopenButton: {
+    backgroundColor: '#2E7D5B',
+  },
+  statusToggleText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  closedNotice: {
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: '#FEE2E2',
+    color: '#991B1B',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 10,
   },
   disabled: {
     opacity: 0.6,
