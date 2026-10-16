@@ -95,8 +95,10 @@ function normalizeRole(value: string): Role | null {
  * This assumes your profiles_role_check constraint accepts
  * "administrator" rather than "admin".
  */
-function toDatabaseRole(role: Role): string {
-  return role === 'admin' ? 'administrator' : role;
+function toDatabaseRole(
+  role: AdminUser['role'],
+): string {
+  return role === 'admin' ? 'admin' : role;
 }
 
 /**

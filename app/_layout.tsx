@@ -1,6 +1,5 @@
 import { Redirect, Stack, useSegments } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-
 import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
 
@@ -17,12 +16,14 @@ export default function RootLayout() {
   }
 
   const inAuthGroup =
-    segments[0] === 'login' || segments[0] === 'register';
+    segments[0] === 'login' ||
+    segments[0] === 'register';
 
-  const inTabsGroup = segments[0] === '(tabs)';
-  const inAdministratorGroup = segments[0] === 'administrator';
+  const inProtectedGroup =
+    segments[0] === '(tabs)' ||
+    segments[0] === 'administrator';
 
-  if (!session && (inTabsGroup || inAdministratorGroup)) {
+  if (!session && inProtectedGroup) {
     return <Redirect href="/login" />;
   }
 
@@ -43,8 +44,8 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: COLORS.background,
   },
 });

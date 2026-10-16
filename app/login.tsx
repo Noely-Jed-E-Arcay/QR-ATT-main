@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import {
   StyleSheet,
@@ -11,7 +12,7 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
 } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { Link } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AppButton from '@/components/AppButton';
@@ -21,33 +22,48 @@ import { signIn } from '@/lib/auth';
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
+    if (loading) return;
+
     setError(null);
     setLoading(true);
 
     try {
-      const { data, error: authError } = await signIn(email.trim(), password);
+      const { error: authError } = await signIn(
+        email.trim(),
+        password
+      );
 
       if (authError) {
         setError(authError.message);
-      } else {
-        router.replace('/(tabs)');
       }
-    } catch (err: any) {
-      setError(err?.message || 'Unexpected error');
+
+      // Navigation is handled by app/_layout.tsx.
+      // Do not call router.replace() here.
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Unexpected error'
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View
+      style={[
+        styles.container,
+        { paddingTop: insets.top },
+      ]}
+    >
       <KeyboardAvoidingView
         style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -64,12 +80,14 @@ export default function LoginScreen() {
             </View>
 
             <Text style={styles.title}>Welcome Back</Text>
+
             <Text style={styles.subtitle}>
               Sign in to record your attendance
             </Text>
 
             <View style={styles.form}>
               <Text style={styles.label}>Email</Text>
+
               <TextInput
                 style={styles.input}
                 value={email}
@@ -77,11 +95,14 @@ export default function LoginScreen() {
                 placeholder="your.email@school.edu"
                 placeholderTextColor={COLORS.textSecondary}
                 autoCapitalize="none"
+                autoCorrect={false}
                 keyboardType="email-address"
                 editable={!loading}
+                returnKeyType="next"
               />
 
               <Text style={styles.label}>Password</Text>
+
               <TextInput
                 style={styles.input}
                 value={password}
@@ -89,12 +110,17 @@ export default function LoginScreen() {
                 placeholder="Enter your password"
                 placeholderTextColor={COLORS.textSecondary}
                 secureTextEntry
+                autoCapitalize="none"
                 editable={!loading}
+                returnKeyType="done"
+                onSubmitEditing={handleLogin}
               />
-              {error && <Text style={styles.error}>{error}</Text>}
-              <Text> </Text>
+
+              {error ? (
+                <Text style={styles.error}>{error}</Text>
+              ) : null}
+
               {loading ? (
-                
                 <ActivityIndicator
                   size="large"
                   color={COLORS.primary}
@@ -178,14 +204,15 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: COLORS.textPrimary,
+    marginBottom: 16,
   },
 
   error: {
     fontSize: 14,
     color: COLORS.danger,
     textAlign: 'left',
-    marginTop: 12,
-    marginBottom: 4,
+    marginTop: 4,
+    marginBottom: 12,
   },
 
   loader: {

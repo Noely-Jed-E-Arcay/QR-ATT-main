@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+
 import { useState } from 'react';
 import {
   Alert,
@@ -7,51 +7,50 @@ import {
   Text,
   TextInput,
   View,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { COLORS } from '@/constants/colors';
 import { signUp } from '@/lib/auth';
 
 export default function RegisterScreen() {
+  const router = useRouter();
+
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-
   const [loading, setLoading] = useState(false);
 
   const handleRegister = async () => {
+    if (loading) return;
+
     const name = fullName.trim();
     const emailValue = email.trim();
 
     if (!name) {
-      Alert.alert(
-        'Missing Name',
-        'Please enter your full name.'
-      );
+      Alert.alert('Missing Name', 'Please enter your full name.');
       return;
     }
 
     if (!emailValue) {
-      Alert.alert(
-        'Missing Email',
-        'Please enter your email.'
-      );
+      Alert.alert('Missing Email', 'Please enter your email.');
       return;
     }
 
     if (!password) {
-      Alert.alert(
-        'Missing Password',
-        'Please enter a password.'
-      );
+      Alert.alert('Missing Password', 'Please enter a password.');
       return;
     }
 
     if (!confirmPassword) {
       Alert.alert(
         'Missing Password Confirmation',
-        'Please re-enter your password.'
+        'Please re-enter your password.',
       );
       return;
     }
@@ -59,152 +58,176 @@ export default function RegisterScreen() {
     if (password !== confirmPassword) {
       Alert.alert(
         'Passwords Do Not Match',
-        'Please make sure both password fields are the same.'
+        'Please make sure both password fields are the same.',
       );
       return;
     }
 
     setLoading(true);
 
-    const { data, error } = await signUp(
-      emailValue,
-      password,
-      {
-        full_name: name,
-        role: 'student',
+    try {
+      const { data, error } = await signUp(
+        emailValue,
+        password,
+        {
+          full_name: name,
+          role: 'student',
+        },
+      );
+
+      if (error) {
+        Alert.alert('Registration Failed', error.message);
+        return;
       }
-    );
 
-    setLoading(false);
+      if (data?.session) {
+        // The root layout handles navigation after authentication.
+        // Do not manually replace the route here.
+        return;
+      }
 
-    if (error) {
+      Alert.alert(
+        'Account Created',
+        'Your account was created. Please check your email if confirmation is required.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              router.navigate('/login');
+            },
+          },
+        ],
+      );
+    } catch (error: unknown) {
       Alert.alert(
         'Registration Failed',
-        error.message
+        error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred. Please try again.',
       );
-      return;
+    } finally {
+      setLoading(false);
     }
-
-    if (data.session) {
-      router.replace('/(tabs)');
-      return;
-    }
-
-    Alert.alert(
-      'Account Created',
-      'Your account was created. Please check your email if confirmation is required.',
-      [
-        {
-          text: 'OK',
-          onPress: () => router.replace('/login'),
-        },
-      ]
-    );
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>
-        Create Account
-      </Text>
-
-      <Text style={styles.subtitle}>
-        Create your QR-ATT account.
-      </Text>
-
-      <Text style={styles.label}>
-        Full Name
-      </Text>
-
-      <TextInput
-        style={styles.input}
-        value={fullName}
-        onChangeText={setFullName}
-        placeholder="Enter your full name"
-        autoCapitalize="words"
-      />
-
-      <Text style={styles.label}>
-        Email
-      </Text>
-
-      <TextInput
-        style={styles.input}
-        value={email}
-        onChangeText={setEmail}
-        placeholder="Enter your email"
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
-
-      <Text style={styles.label}>
-        Password
-      </Text>
-
-      <TextInput
-        style={styles.input}
-        value={password}
-        onChangeText={setPassword}
-        placeholder="Enter your password"
-        secureTextEntry
-      />
-
-      <Text style={styles.label}>
-        Re-enter Password
-      </Text>
-
-      <TextInput
-        style={styles.input}
-        value={confirmPassword}
-        onChangeText={setConfirmPassword}
-        placeholder="Re-enter your password"
-        secureTextEntry
-      />
-
-      <View style={styles.infoBox}>
-        <Text style={styles.infoTitle}>
-          Account Type
-        </Text>
-
-        <Text style={styles.infoText}>
-          New accounts are registered as Students.
-          {'\n\n'}
-          If you are a Teacher, you must request
-          Teacher Verification after creating your account.
-        </Text>
-      </View>
-
-      <Pressable
-        style={[
-          styles.button,
-          loading && styles.buttonDisabled,
-        ]}
-        onPress={handleRegister}
-        disabled={loading}
+    <KeyboardAvoidingView
+      style={styles.keyboardView}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.buttonText}>
-          {loading
-            ? 'Creating Account...'
-            : 'Create Account'}
-        </Text>
-      </Pressable>
+        <View style={styles.container}>
+          <Text style={styles.title}>Create Account</Text>
 
-      <Pressable
-        style={styles.loginButton}
-        onPress={() => router.replace('/login')}
-      >
-        <Text style={styles.loginText}>
-          Already have an account? Log in
-        </Text>
-      </Pressable>
-    </View>
+          <Text style={styles.subtitle}>
+            Create your QR-ATT account.
+          </Text>
+
+          <Text style={styles.label}>Full Name</Text>
+
+          <TextInput
+            style={styles.input}
+            value={fullName}
+            onChangeText={setFullName}
+            placeholder="Enter your full name"
+            autoCapitalize="words"
+            editable={!loading}
+          />
+
+          <Text style={styles.label}>Email</Text>
+
+          <TextInput
+            style={styles.input}
+            value={email}
+            onChangeText={setEmail}
+            placeholder="Enter your email"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!loading}
+          />
+
+          <Text style={styles.label}>Password</Text>
+
+          <TextInput
+            style={styles.input}
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Enter your password"
+            secureTextEntry
+            editable={!loading}
+          />
+
+          <Text style={styles.label}>Re-enter Password</Text>
+
+          <TextInput
+            style={styles.input}
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            placeholder="Re-enter your password"
+            secureTextEntry
+            editable={!loading}
+          />
+
+          <View style={styles.infoBox}>
+            <Text style={styles.infoTitle}>Account Type</Text>
+
+            <Text style={styles.infoText}>
+              New accounts are registered as Students.
+              {'\n\n'}
+              If you are a Teacher, you must request Teacher
+              Verification after creating your account.
+            </Text>
+          </View>
+
+          <Pressable
+            style={[
+              styles.button,
+              loading && styles.buttonDisabled,
+            ]}
+            onPress={handleRegister}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color={COLORS.textOnPrimary} />
+            ) : (
+              <Text style={styles.buttonText}>
+                Create Account
+              </Text>
+            )}
+          </Pressable>
+
+          <Pressable
+            style={styles.loginButton}
+            onPress={() => router.navigate('/login')}
+            disabled={loading}
+          >
+            <Text style={styles.loginText}>
+              Already have an account? Log in
+            </Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  keyboardView: {
     flex: 1,
+    backgroundColor: COLORS.background,
+  },
+
+  scrollContent: {
+    flexGrow: 1,
+  },
+
+  container: {
+    flexGrow: 1,
     padding: 24,
     justifyContent: 'center',
     backgroundColor: COLORS.background,
@@ -239,6 +262,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     fontSize: 16,
     backgroundColor: COLORS.card,
+    color: COLORS.textPrimary,
   },
 
   infoBox: {
@@ -264,7 +288,7 @@ const styles = StyleSheet.create({
   },
 
   button: {
-    height: 52,
+    minHeight: 52,
     borderRadius: 10,
     backgroundColor: COLORS.primary,
     alignItems: 'center',
@@ -286,6 +310,7 @@ const styles = StyleSheet.create({
   loginButton: {
     alignItems: 'center',
     marginTop: 20,
+    paddingVertical: 8,
   },
 
   loginText: {

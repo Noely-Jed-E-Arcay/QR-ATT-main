@@ -244,14 +244,20 @@ export default function HistoryScreen() {
     }
   };
 
+  // FIXING: Use the correct updateEvent field names.
   const handleSaveEvent = async () => {
     if (!editingEvent || !editTitle.trim()) {
       Alert.alert('Invalid Input', 'Event title is required.');
       return;
     }
 
-    const parsedStart = editStartDate ? editStartDate.toISOString() : null;
-    const parsedEnd = editEndDate ? editEndDate.toISOString() : null;
+    const parsedStart = editStartDate
+      ? editStartDate.toISOString()
+      : null;
+
+    const parsedEnd = editEndDate
+      ? editEndDate.toISOString()
+      : null;
 
     if (
       parsedStart &&
@@ -270,10 +276,10 @@ export default function HistoryScreen() {
     try {
       const { error } = await updateEvent(editingEvent.eventId, {
         title: editTitle.trim(),
-        start: parsedStart,
-        end: parsedEnd,
-        location: editLocation.trim(),
-        description: editDescription.trim(),
+        start_time: parsedStart,
+        end_time: parsedEnd,
+        location: editLocation.trim() || null,
+        description: editDescription.trim() || null,
       });
 
       if (error) {
@@ -283,14 +289,18 @@ export default function HistoryScreen() {
 
       setEditingEvent(null);
       setActiveEditPicker(null);
+
       await load();
 
       Alert.alert('Success', 'Event details updated successfully.');
     } catch (error) {
       console.error('Update failed:', error);
+
       Alert.alert(
         'Update Failed',
-        error instanceof Error ? error.message : 'Unable to update event.'
+        error instanceof Error
+          ? error.message
+          : 'Unable to update event.'
       );
     } finally {
       setSavingEvent(false);
@@ -330,6 +340,7 @@ export default function HistoryScreen() {
               }
 
               await load();
+
               Alert.alert('Success', 'Event deleted successfully.');
             } catch (error) {
               console.error('Delete failed:', error);
@@ -934,9 +945,7 @@ export default function HistoryScreen() {
                           ? 'date'
                           : 'time'
                       }
-                      display={
-                        Platform.OS === 'ios' ? 'spinner' : 'default'
-                      }
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                       onChange={handleEditPickerChange}
                       themeVariant="light"
                     />

@@ -10,7 +10,7 @@ import {
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import AppButton from '@/components/AppButton';
@@ -21,7 +21,6 @@ import {
   updateProfile,
   type Profile,
 } from '@/lib/profiles';
-
 import {
   createTeacherRequest,
   getMyTeacherRequest,
@@ -30,7 +29,6 @@ import {
 
 export default function ProfileScreen() {
   const { user } = useAuth();
-  const router = useRouter();
 
   const [loading, setLoading] = useState(false);
   const [fetchingProfile, setFetchingProfile] = useState(true);
@@ -40,7 +38,6 @@ export default function ProfileScreen() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Teacher verification
   const [teacherRequest, setTeacherRequest] =
     useState<TeacherRequest | null>(null);
   const [schoolStaffId, setSchoolStaffId] = useState('');
@@ -48,17 +45,28 @@ export default function ProfileScreen() {
   const [requestLoading, setRequestLoading] = useState(false);
 
   // SIGN OUT
+  // Navigation is handled by app/_layout.tsx after the session clears.
   const handleSignOut = async () => {
+    if (loading) return;
+
     setLoading(true);
 
     try {
-      await signOut();
-      router.replace('/login');
-    } catch (err: any) {
-      Alert.alert(
-        'Error',
-        err?.message || 'Failed to sign out.'
-      );
+      const result = await signOut();
+
+      if (result.error) {
+        Alert.alert('Sign Out Failed', result.error.message);
+      }
+
+      // Do not call router.replace('/login') here.
+      // The root layout redirects when session becomes null.
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to sign out. Please try again.';
+
+      Alert.alert('Error', message);
     } finally {
       setLoading(false);
     }
@@ -67,6 +75,8 @@ export default function ProfileScreen() {
   // LOAD PROFILE
   const loadProfile = useCallback(async () => {
     if (!user) {
+      setProfile(null);
+      setTeacherRequest(null);
       setFetchingProfile(false);
       return;
     }
@@ -74,22 +84,24 @@ export default function ProfileScreen() {
     setFetchingProfile(true);
 
     try {
-      const p = await getProfile(user.id);
+      const currentProfile = await getProfile(user.id);
 
-      setProfile(p);
-      setDraftName(p?.full_name ?? '');
+      setProfile(currentProfile);
+      setDraftName(currentProfile?.full_name ?? '');
 
-      if (p?.role === 'student') {
+      if (currentProfile?.role === 'student') {
         const request = await getMyTeacherRequest(user.id);
         setTeacherRequest(request);
       } else {
         setTeacherRequest(null);
       }
-    } catch (error: any) {
-      Alert.alert(
-        'Error',
-        error?.message || 'Failed to load profile.'
-      );
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load profile.';
+
+      Alert.alert('Error', message);
     } finally {
       setFetchingProfile(false);
     }
@@ -97,21 +109,18 @@ export default function ProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      loadProfile();
+      void loadProfile();
     }, [loadProfile])
   );
 
   // SAVE NAME
   const handleSaveName = async () => {
-    if (!user) return;
+    if (!user || saving) return;
 
     const newName = draftName.trim();
 
     if (!newName) {
-      Alert.alert(
-        'Invalid Name',
-        'Please enter your full name.'
-      );
+      Alert.alert('Invalid Name', 'Please enter your full name.');
       return;
     }
 
@@ -127,20 +136,23 @@ export default function ProfileScreen() {
         return;
       }
 
-      setProfile((prev) =>
-        prev
-          ? { ...prev, full_name: newName }
-          : prev
+      setProfile((previous) =>
+        previous
+          ? { ...previous, full_name: newName }
+          : previous
       );
 
+      setDraftName(newName);
       setEditing(false);
 
       Alert.alert('Saved', 'Your name has been updated.');
-    } catch (error: any) {
-      Alert.alert(
-        'Error',
-        error?.message || 'Failed to update your name.'
-      );
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to update your name.';
+
+      Alert.alert('Error', message);
     } finally {
       setSaving(false);
     }
@@ -148,7 +160,7 @@ export default function ProfileScreen() {
 
   // REQUEST TEACHER VERIFICATION
   const handleTeacherRequest = async () => {
-    if (!user) return;
+    if (!user || requestLoading) return;
 
     if (!profile) {
       Alert.alert('Error', 'Your profile could not be loaded.');
@@ -205,18 +217,18 @@ export default function ProfileScreen() {
         'Request Submitted',
         'Your Teacher Verification request has been sent to an administrator for review.'
       );
-    } catch (error: any) {
-      Alert.alert(
-        'Error',
-        error?.message ||
-          'Failed to submit Teacher Verification request.'
-      );
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to submit Teacher Verification request.';
+
+      Alert.alert('Error', message);
     } finally {
       setRequestLoading(false);
     }
   };
 
-  // LOADING SCREEN
   if (fetchingProfile) {
     return (
       <View style={styles.loadingContainer}>
@@ -287,7 +299,8 @@ export default function ProfileScreen() {
               style={[
                 styles.roleBadge,
                 profile?.role === 'teacher' && styles.teacherBadge,
-                profile?.role === 'admin' && styles.adminBadge,
+                (profile?.role === 'admin') &&
+                  styles.adminBadge,
               ]}
             >
               <Ionicons
@@ -300,11 +313,9 @@ export default function ProfileScreen() {
                 }
                 size={13}
                 color={
-                  profile?.role === 'admin'
-                    ? '#FFFFFF'
-                    : profile?.role === 'teacher'
-                      ? '#FFFFFF'
-                      : COLORS.primary
+                  profile?.role === 'student'
+                    ? COLORS.primary
+                    : '#FFFFFF'
                 }
               />
 
@@ -345,7 +356,6 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.infoCard}>
-        {/* NAME */}
         <View style={styles.fieldHeading}>
           <Text style={styles.fieldLabel}>FULL NAME</Text>
 
@@ -374,6 +384,7 @@ export default function ProfileScreen() {
               style={styles.nameInput}
               autoCapitalize="words"
               returnKeyType="done"
+              editable={!saving}
             />
 
             <View style={styles.editButtons}>
@@ -419,7 +430,6 @@ export default function ProfileScreen() {
 
         <View style={styles.fieldDivider} />
 
-        {/* EMAIL */}
         <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
         <View style={styles.detailRow}>
           <View style={styles.detailIcon}>
@@ -436,7 +446,6 @@ export default function ProfileScreen() {
 
         <View style={styles.fieldDivider} />
 
-        {/* USER ID */}
         <Text style={styles.fieldLabel}>ACCOUNT ID</Text>
         <View style={styles.detailRow}>
           <View style={styles.detailIcon}>
@@ -542,9 +551,25 @@ export default function ProfileScreen() {
                   {teacherRequest.status === 'pending'
                     ? 'Your request is waiting for an administrator to review it.'
                     : teacherRequest.status === 'approved'
-                      ? 'Your request has been approved. Your account is eligible for Teacher access. Refresh your profile to see any updated role.'
+                      ? 'Your request has been approved. Refresh your profile to see any updated role.'
                       : 'Your previous Teacher Verification request was rejected.'}
                 </Text>
+
+                {teacherRequest.status === 'rejected' && (
+                  <Pressable
+                    style={styles.resubmitButton}
+                    onPress={() => setTeacherRequest(null)}
+                  >
+                    <Ionicons
+                      name="refresh-outline"
+                      size={16}
+                      color={COLORS.primary}
+                    />
+                    <Text style={styles.resubmitButtonText}>
+                      Submit a New Request
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             ) : (
               <>
@@ -562,6 +587,7 @@ export default function ProfileScreen() {
                     placeholderTextColor={COLORS.textSecondary}
                     style={styles.teacherInput}
                     autoCapitalize="characters"
+                    editable={!requestLoading}
                   />
                 </View>
 
@@ -581,6 +607,7 @@ export default function ProfileScreen() {
                     style={[styles.teacherInput, styles.reasonInput]}
                     multiline
                     textAlignVertical="top"
+                    editable={!requestLoading}
                   />
                 </View>
 
@@ -665,27 +692,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   contentContainer: {
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 36,
   },
-
   loadingContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   loadingText: {
     marginTop: 12,
     fontSize: 14,
     color: COLORS.textSecondary,
   },
-
-  // PROFILE HEADER
   profileHeader: {
     backgroundColor: COLORS.card,
     borderRadius: 24,
@@ -695,14 +717,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     overflow: 'hidden',
   },
-
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 24,
   },
-
   eyebrow: {
     fontSize: 10,
     fontWeight: '800',
@@ -710,13 +730,11 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginBottom: 5,
   },
-
   pageTitle: {
     fontSize: 26,
     fontWeight: '800',
     color: COLORS.textPrimary,
   },
-
   headerDecoration: {
     width: 44,
     height: 44,
@@ -725,12 +743,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   identityContainer: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   avatar: {
     width: 82,
     height: 82,
@@ -741,13 +757,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   avatarText: {
     fontSize: 34,
     fontWeight: '800',
     color: COLORS.primary,
   },
-
   avatarCheck: {
     position: 'absolute',
     bottom: -3,
@@ -761,25 +775,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   identityText: {
     flex: 1,
     marginLeft: 16,
   },
-
   profileName: {
     fontSize: 19,
     fontWeight: '800',
     color: COLORS.textPrimary,
     marginBottom: 5,
   },
-
   profileEmail: {
     fontSize: 12,
     color: COLORS.textSecondary,
     marginBottom: 10,
   },
-
   roleBadge: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
@@ -790,45 +800,36 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 20,
   },
-
   roleBadgeText: {
     fontSize: 11,
     fontWeight: '800',
     color: COLORS.primary,
   },
-
   teacherBadge: {
     backgroundColor: COLORS.primary,
   },
-
   adminBadge: {
     backgroundColor: '#4b14aa',
   },
-
   specialRoleText: {
     color: '#FFFFFF',
   },
-
   headerBottomLine: {
     height: 1,
     backgroundColor: COLORS.border,
     marginTop: 22,
     marginBottom: 12,
   },
-
   headerFooter: {
     fontSize: 12,
     color: COLORS.textSecondary,
     lineHeight: 18,
   },
-
-  // SECTION HEADINGS
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 13,
   },
-
   sectionIcon: {
     width: 42,
     height: 42,
@@ -838,20 +839,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-
   sectionTitle: {
     fontSize: 16,
     fontWeight: '800',
     color: COLORS.textPrimary,
   },
-
   sectionSubtitle: {
     fontSize: 12,
     color: COLORS.textSecondary,
     marginTop: 3,
   },
-
-  // PERSONAL INFORMATION
   infoCard: {
     backgroundColor: COLORS.card,
     borderRadius: 20,
@@ -860,28 +857,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-
   fieldHeading: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
   },
-
   fieldLabel: {
     fontSize: 10,
     fontWeight: '800',
     color: COLORS.textSecondary,
     letterSpacing: 1.1,
   },
-
   fieldValue: {
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.textPrimary,
     marginTop: 2,
   },
-
   editAction: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -891,17 +884,14 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     backgroundColor: COLORS.surface,
   },
-
   editActionText: {
     color: COLORS.primary,
     fontSize: 12,
     fontWeight: '700',
   },
-
   editForm: {
     marginTop: 2,
   },
-
   nameInput: {
     minHeight: 46,
     borderWidth: 1,
@@ -912,14 +902,12 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: 14,
   },
-
   editButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     marginTop: 10,
     gap: 8,
   },
-
   cancelButton: {
     paddingHorizontal: 15,
     paddingVertical: 10,
@@ -927,13 +915,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     justifyContent: 'center',
   },
-
   cancelButtonText: {
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.textSecondary,
   },
-
   saveButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -944,25 +930,21 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: COLORS.primary,
   },
-
   saveButtonText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
   },
-
   fieldDivider: {
     height: 1,
     backgroundColor: COLORS.border,
     marginVertical: 18,
   },
-
   detailRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 10,
   },
-
   detailIcon: {
     width: 38,
     height: 38,
@@ -972,21 +954,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 11,
   },
-
   detailValue: {
     flex: 1,
     fontSize: 13,
     color: COLORS.textPrimary,
   },
-
   userIdValue: {
     flex: 1,
     fontSize: 11,
     lineHeight: 17,
     color: COLORS.textSecondary,
   },
-
-  // TEACHER VERIFICATION
   teacherCard: {
     backgroundColor: COLORS.card,
     borderRadius: 20,
@@ -995,13 +973,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-
   teacherIntro: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 20,
   },
-
   teacherIllustration: {
     width: 50,
     height: 50,
@@ -1010,25 +986,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   teacherIntroText: {
     flex: 1,
     marginLeft: 12,
   },
-
   teacherCardTitle: {
     fontSize: 16,
     fontWeight: '800',
     color: COLORS.textPrimary,
     marginBottom: 5,
   },
-
   teacherDescription: {
     fontSize: 12,
     lineHeight: 18,
     color: COLORS.textSecondary,
   },
-
   inputLabel: {
     fontSize: 11,
     fontWeight: '800',
@@ -1037,7 +1009,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
     letterSpacing: 0.5,
   },
-
   inputWrapper: {
     minHeight: 50,
     flexDirection: 'row',
@@ -1048,7 +1019,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     paddingHorizontal: 12,
   },
-
   teacherInput: {
     flex: 1,
     minHeight: 48,
@@ -1057,21 +1027,17 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: 13,
   },
-
   reasonWrapper: {
     alignItems: 'flex-start',
     paddingTop: 12,
   },
-
   reasonIcon: {
     marginTop: 8,
   },
-
   reasonInput: {
     minHeight: 95,
     paddingTop: 6,
   },
-
   teacherRequestButton: {
     minHeight: 50,
     flexDirection: 'row',
@@ -1084,7 +1050,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginTop: 18,
   },
-
   teacherRequestButtonText: {
     flex: 1,
     textAlign: 'center',
@@ -1092,22 +1057,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
-
   privacyNote: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
     marginTop: 14,
   },
-
   privacyText: {
     flex: 1,
     fontSize: 11,
     lineHeight: 16,
     color: COLORS.textSecondary,
   },
-
-  // REQUEST STATUS
   requestStatusBox: {
     backgroundColor: COLORS.background,
     borderWidth: 1,
@@ -1115,7 +1076,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
   },
-
   statusHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1123,7 +1083,6 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
   },
-
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1132,63 +1091,65 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 20,
   },
-
   pendingPill: {
     backgroundColor: '#FFF1D6',
   },
-
   approvedPill: {
     backgroundColor: '#E4F3E7',
   },
-
   rejectedPill: {
     backgroundColor: '#FBE9E7',
   },
-
   statusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
   },
-
   pendingDot: {
     backgroundColor: '#B7791F',
   },
-
   approvedDot: {
     backgroundColor: '#2E7D32',
   },
-
   rejectedDot: {
     backgroundColor: '#C62828',
   },
-
   statusText: {
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-
   pendingText: {
     color: '#8A5A12',
   },
-
   approvedText: {
     color: '#2E7D32',
   },
-
   rejectedText: {
     color: '#C62828',
   },
-
   requestMessage: {
     fontSize: 12,
     lineHeight: 19,
     color: COLORS.textSecondary,
     marginTop: 12,
   },
-
-  // SIGN OUT
+  resubmitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    backgroundColor: COLORS.surface,
+    borderRadius: 10,
+  },
+  resubmitButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
   signOutCard: {
     backgroundColor: COLORS.card,
     borderRadius: 20,
@@ -1197,12 +1158,10 @@ const styles = StyleSheet.create({
     padding: 16,
     marginTop: 2,
   },
-
   signOutInfo: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   signOutIcon: {
     width: 44,
     height: 44,
@@ -1211,33 +1170,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   signOutTextContainer: {
     flex: 1,
     marginLeft: 12,
   },
-
   signOutTitle: {
     fontSize: 15,
     fontWeight: '800',
     color: COLORS.textPrimary,
   },
-
   signOutSubtitle: {
     fontSize: 11,
     lineHeight: 16,
     color: COLORS.textSecondary,
     marginTop: 4,
   },
-
   signOutButton: {
     marginTop: 15,
   },
-
   disabledButton: {
     opacity: 0.6,
   },
-
   footerText: {
     fontSize: 11,
     color: COLORS.textSecondary,

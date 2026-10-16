@@ -1,5 +1,6 @@
+
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -23,32 +24,47 @@ import {
   markAnnouncementAsRead,
   type Announcement,
 } from '@/lib/announcements';
+import {
+  getAvailableEvents,
+  type CloudEvent,
+} from '@/lib/events';
 
 type UserRole = 'student' | 'teacher' | 'admin';
 
 export default function Index() {
   const { user } = useAuth();
   const { width } = useWindowDimensions();
+  const scrollViewRef = useRef<ScrollView>(null);
+  const [eventsSectionY, setEventsSectionY] = useState(0);
 
   const [role, setRole] = useState<UserRole>('student');
   const [loadingRole, setLoadingRole] = useState(true);
+
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loadingAnnouncements, setLoadingAnnouncements] = useState(true);
   const [announcementError, setAnnouncementError] = useState('');
   const [readingId, setReadingId] = useState<string | null>(null);
+
+  const [events, setEvents] = useState<CloudEvent[]>([]);
+  const [loadingEvents, setLoadingEvents] = useState(true);
+  const [eventError, setEventError] = useState('');
 
   const isSmallScreen = width < 380;
 
   const loadDashboard = useCallback(async () => {
     setLoadingRole(true);
     setLoadingAnnouncements(true);
+    setLoadingEvents(true);
     setAnnouncementError('');
+    setEventError('');
 
     if (!user) {
       setRole('student');
       setAnnouncements([]);
+      setEvents([]);
       setLoadingRole(false);
       setLoadingAnnouncements(false);
+      setLoadingEvents(false);
       return;
     }
 
@@ -64,13 +80,24 @@ export default function Index() {
 
       setRole(profileRole);
 
-      const result = await getAnnouncements(user.id, profileRole);
+      const [announcementResult, eventResult] = await Promise.all([
+        getAnnouncements(user.id, profileRole),
+        getAvailableEvents(),
+      ]);
 
-      setAnnouncements(result.data ?? []);
+      setAnnouncements(announcementResult.data ?? []);
 
-      if (result.error) {
+      if (announcementResult.error) {
         setAnnouncementError(
           'Unable to load announcements. Please try again.',
+        );
+      }
+
+      setEvents(eventResult.events);
+
+      if (eventResult.error) {
+        setEventError(
+          'Unable to load school events. Please try again.',
         );
       }
     } catch (error) {
@@ -78,9 +105,13 @@ export default function Index() {
       setAnnouncementError(
         'Unable to load announcements. Check your connection and try again.',
       );
+      setEventError(
+        'Unable to load school events. Please try again.',
+      );
     } finally {
       setLoadingRole(false);
       setLoadingAnnouncements(false);
+      setLoadingEvents(false);
     }
   }, [user]);
 
@@ -163,13 +194,39 @@ export default function Index() {
     });
   };
 
-  const refreshAnnouncements = () => {
+  const formatEventDate = (dateString: string | null) => {
+    if (!dateString) return 'Schedule to be announced';
+
+    const date = new Date(dateString);
+
+    if (Number.isNaN(date.getTime())) {
+      return 'Schedule unavailable';
+    }
+
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  const refreshDashboard = () => {
     void loadDashboard();
+  };
+
+  const scrollToEvents = () => {
+    scrollViewRef.current?.scrollTo({
+      y: Math.max(eventsSectionY - 10, 0),
+      animated: true,
+    });
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
+        ref={scrollViewRef}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
@@ -337,7 +394,6 @@ export default function Index() {
                   onPress={() => router.push('/teacher')}
                 />
 
-                {/* TEACHER ANNOUNCEMENTS SHORTCUT */}
                 <ShortcutCard
                   compact={isSmallScreen}
                   icon="megaphone-outline"
@@ -394,8 +450,8 @@ export default function Index() {
                   compact={isSmallScreen}
                   icon="calendar-outline"
                   title="School Events"
-                  description="Check event information"
-                  onPress={() => router.push('/history')}
+                  description="Check available school events"
+                  onPress={scrollToEvents}
                 />
 
                 <ShortcutCard
@@ -408,6 +464,148 @@ export default function Index() {
               </>
             )}
           </View>
+        </View>
+
+        {/* SCHOOL EVENTS FEED */}
+        <View
+          style={styles.section}
+          onLayout={(event) =>
+            setEventsSectionY(event.nativeEvent.layout.y)
+          }
+        >
+          <View style={styles.announcementHeader}>
+            <View style={styles.announcementHeading}>
+              <Ionicons
+                name="calendar-outline"
+                size={20}
+                color={COLORS.primary}
+              />
+              <Text style={styles.sectionTitle}>School Events</Text>
+            </View>
+
+            {!loadingEvents && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>
+                  {events.length} available
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {loadingEvents ? (
+            <View style={styles.announcementStateCard}>
+              <ActivityIndicator
+                size="small"
+                color={COLORS.primary}
+              />
+              <Text style={styles.stateText}>
+                Loading school events...
+              </Text>
+            </View>
+          ) : eventError ? (
+            <View style={styles.announcementStateCard}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={25}
+                color={COLORS.danger}
+              />
+              <Text style={styles.stateText}>{eventError}</Text>
+
+              <Pressable
+                style={styles.retryButton}
+                onPress={refreshDashboard}
+              >
+                <Text style={styles.retryButtonText}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : events.length === 0 ? (
+            <View style={styles.announcementStateCard}>
+              <View style={styles.emptyAnnouncementIcon}>
+                <Ionicons
+                  name="calendar-clear-outline"
+                  size={25}
+                  color={COLORS.primary}
+                />
+              </View>
+
+              <Text style={styles.emptyAnnouncementTitle}>
+                No available events
+              </Text>
+
+              <Text style={styles.stateText}>
+                Events created by teachers and administrators will
+                appear here when they are available.
+              </Text>
+            </View>
+          ) : (
+            events.map((event) => (
+              <View key={event.id} style={styles.announcementCard}>
+                <View style={styles.announcementIcon}>
+                  <Ionicons
+                    name="calendar"
+                    size={22}
+                    color={COLORS.primary}
+                  />
+                </View>
+
+                <View style={styles.announcementContent}>
+                  <Text style={styles.announcementTitle}>
+                    {event.title}
+                  </Text>
+
+                  {!!event.description && (
+                    <Text
+                      style={styles.announcementDescription}
+                      numberOfLines={3}
+                    >
+                      {event.description}
+                    </Text>
+                  )}
+
+                  <View style={styles.eventDetailRow}>
+                    <Ionicons
+                      name="time-outline"
+                      size={14}
+                      color={COLORS.textSecondary}
+                    />
+                    <Text style={styles.announcementDate}>
+                      Starts: {formatEventDate(event.start_time)}
+                    </Text>
+                  </View>
+
+                  {event.end_time && (
+                    <View style={styles.eventDetailRow}>
+                      <Ionicons
+                        name="checkmark-circle-outline"
+                        size={14}
+                        color={COLORS.textSecondary}
+                      />
+                      <Text style={styles.announcementDate}>
+                        Ends: {formatEventDate(event.end_time)}
+                      </Text>
+                    </View>
+                  )}
+
+                  {!!event.location && (
+                    <View style={styles.eventDetailRow}>
+                      <Ionicons
+                        name="location-outline"
+                        size={14}
+                        color={COLORS.textSecondary}
+                      />
+                      <Text style={styles.announcementDate}>
+                        {event.location}
+                      </Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.eventCode}>
+                    Event code: {event.event_code}
+                  </Text>
+                </View>
+              </View>
+            ))
+          )}
         </View>
 
         {/* ANNOUNCEMENTS FEED */}
@@ -449,14 +647,13 @@ export default function Index() {
                 size={25}
                 color={COLORS.danger}
               />
-
               <Text style={styles.stateText}>
                 {announcementError}
               </Text>
 
               <Pressable
                 style={styles.retryButton}
-                onPress={refreshAnnouncements}
+                onPress={refreshDashboard}
               >
                 <Text style={styles.retryButtonText}>Try again</Text>
               </Pressable>
@@ -613,7 +810,6 @@ function ShortcutCard({
       </View>
 
       <Text style={styles.shortcutTitle}>{title}</Text>
-
       <Text style={styles.shortcutDescription}>{description}</Text>
 
       <View style={styles.shortcutAction}>
@@ -633,20 +829,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 24,
   },
-
   headerContainer: {
     alignItems: 'center',
     marginTop: 4,
     marginBottom: 12,
   },
-
   welcomeCard: {
     backgroundColor: COLORS.textSecondary,
     borderRadius: 20,
@@ -654,14 +847,12 @@ const styles = StyleSheet.create({
     marginBottom: 22,
     overflow: 'hidden',
   },
-
   welcomeTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 16,
   },
-
   welcomeIcon: {
     width: 44,
     height: 44,
@@ -670,21 +861,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   roleBadge: {
     backgroundColor: COLORS.surface,
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-
   roleBadgeText: {
     color: COLORS.textSecondary,
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-
   welcomeEyebrow: {
     color: COLORS.surface,
     opacity: 0.85,
@@ -693,37 +881,31 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: 7,
   },
-
   welcomeTitle: {
     color: '#FFFFFF',
     fontSize: 25,
     fontWeight: '800',
     marginBottom: 7,
   },
-
   welcomeMessage: {
     color: COLORS.background,
     fontSize: 13,
     lineHeight: 19,
     maxWidth: 300,
   },
-
   loadingIndicator: {
     alignSelf: 'flex-start',
     marginTop: 10,
   },
-
   section: {
     marginBottom: 22,
   },
-
   sectionTitle: {
     color: COLORS.textPrimary,
     fontSize: 16,
     fontWeight: '800',
     marginBottom: 11,
   },
-
   scanCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -733,7 +915,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     gap: 11,
   },
-
   scanIconContainer: {
     width: 48,
     height: 48,
@@ -742,30 +923,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   scanTextContainer: {
     flex: 1,
   },
-
   scanTitle: {
     color: COLORS.textPrimary,
     fontSize: 14,
     fontWeight: '800',
     marginBottom: 4,
   },
-
   scanDescription: {
     color: COLORS.textSecondary,
     fontSize: 11,
     lineHeight: 16,
   },
-
   shortcutGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
   },
-
   shortcutCard: {
     width: '48.5%',
     backgroundColor: COLORS.card,
@@ -775,15 +951,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.surface,
     marginBottom: 10,
   },
-
   shortcutCardCompact: {
     padding: 10,
   },
-
   shortcutPressed: {
     opacity: 0.75,
   },
-
   shortcutIcon: {
     width: 36,
     height: 36,
@@ -793,34 +966,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 9,
   },
-
   shortcutTitle: {
     color: COLORS.textPrimary,
     fontSize: 12,
     fontWeight: '800',
     marginBottom: 4,
   },
-
   shortcutDescription: {
     color: COLORS.textSecondary,
     fontSize: 10,
     lineHeight: 14,
     minHeight: 28,
   },
-
   shortcutAction: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     marginTop: 10,
   },
-
   shortcutActionText: {
     color: COLORS.primary,
     fontSize: 10,
     fontWeight: '700',
   },
-
   announcementHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -828,27 +996,23 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     gap: 8,
   },
-
   announcementHeading: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
     flex: 1,
   },
-
   countBadge: {
     backgroundColor: COLORS.surface,
     paddingHorizontal: 9,
     paddingVertical: 5,
     borderRadius: 20,
   },
-
   countBadgeText: {
     color: COLORS.textSecondary,
     fontSize: 10,
     fontWeight: '800',
   },
-
   announcementCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -860,15 +1024,12 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 9,
   },
-
   unreadAnnouncementCard: {
     borderColor: COLORS.primary,
   },
-
   announcementPressed: {
     opacity: 0.75,
   },
-
   announcementIcon: {
     width: 38,
     height: 38,
@@ -877,38 +1038,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   announcementContent: {
     flex: 1,
   },
-
   announcementTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
     marginBottom: 4,
   },
-
   announcementTitle: {
     color: COLORS.textPrimary,
     fontSize: 13,
     fontWeight: '800',
     flex: 1,
   },
-
   unreadDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
     backgroundColor: COLORS.primary,
   },
-
   announcementDescription: {
     color: COLORS.textSecondary,
     fontSize: 11,
     lineHeight: 17,
   },
-
   announcementMeta: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -916,23 +1071,19 @@ const styles = StyleSheet.create({
     gap: 5,
     marginTop: 9,
   },
-
   announcementDate: {
     color: COLORS.textSecondary,
     fontSize: 10,
   },
-
   metaSeparator: {
     color: COLORS.textSecondary,
     fontSize: 10,
   },
-
   announcementReadStatus: {
     color: COLORS.primary,
     fontSize: 10,
     fontWeight: '700',
   },
-
   announcementStateCard: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -943,7 +1094,6 @@ const styles = StyleSheet.create({
     borderColor: COLORS.surface,
     gap: 9,
   },
-
   emptyAnnouncementIcon: {
     width: 46,
     height: 46,
@@ -952,21 +1102,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
   emptyAnnouncementTitle: {
     color: COLORS.textPrimary,
     fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
-
   stateText: {
     color: COLORS.textSecondary,
     fontSize: 11,
     lineHeight: 17,
     textAlign: 'center',
   },
-
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -974,13 +1121,24 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     marginTop: 4,
   },
-
   retryButtonText: {
     color: COLORS.textPrimary,
     fontSize: 12,
     fontWeight: '800',
   },
-
+  eventDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 7,
+  },
+  eventCode: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: '800',
+    marginTop: 9,
+  },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -989,7 +1147,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
     paddingVertical: 10,
   },
-
   footerText: {
     color: COLORS.textSecondary,
     fontSize: 10,

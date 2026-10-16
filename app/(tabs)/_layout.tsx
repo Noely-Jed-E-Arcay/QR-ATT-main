@@ -1,14 +1,19 @@
-import { Tabs } from 'expo-router';
+
+import { Tabs, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { COLORS } from '@/constants/colors';
+import { useAuth } from '@/lib/auth';
+import { getProfile, type Role } from '@/lib/profiles';
 
 function AnimatedScanIcon({ focused }: { focused: boolean }) {
   const floatAnim = useRef(new Animated.Value(0)).current;
@@ -97,49 +102,80 @@ function AnimatedScanIcon({ focused }: { focused: boolean }) {
 }
 
 export default function TabLayout() {
+  const { user } = useAuth();
+  const [role, setRole] = useState<Role | null>(null);
+  const [roleLoading, setRoleLoading] = useState(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      if (!user) {
+        setRole(null);
+        setRoleLoading(false);
+
+        return () => {
+          active = false;
+        };
+      }
+
+      setRoleLoading(true);
+
+      getProfile(user.id)
+        .then((profile) => {
+          if (active) {
+            setRole(profile?.role ?? 'student');
+          }
+        })
+        .catch((error) => {
+          console.error('Unable to load tab role:', error);
+
+          if (active) {
+            setRole('student');
+          }
+        })
+        .finally(() => {
+          if (active) setRoleLoading(false);
+        });
+
+      return () => {
+        active = false;
+      };
+    }, [user]),
+  );
+
+  const isStudent = roleLoading || !role || role === 'student';
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <Tabs
         screenOptions={{
           headerShown: false,
-
           tabBarActiveTintColor: COLORS.primary,
           tabBarInactiveTintColor: COLORS.textSecondary,
           tabBarShowLabel: true,
-
-          // Compact navbar that reserves its own layout space.
           tabBarStyle: {
             position: 'relative',
-
             height: 65,
             backgroundColor: COLORS.card,
-
             borderTopWidth: 0,
             borderRadius: 22,
-
             marginHorizontal: 16,
             marginTop: 4,
             marginBottom: 6,
-
             paddingTop: 5,
             paddingBottom: 5,
-
             elevation: 8,
             shadowColor: '#000000',
-            shadowOffset: {
-              width: 0,
-              height: 4,
-            },
-            shadowOpacity: 0.10,
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.1,
             shadowRadius: 8,
           },
-
           tabBarLabelStyle: {
             fontSize: 9,
             fontWeight: '600',
             marginTop: 0,
           },
-
           tabBarItemStyle: {
             paddingVertical: 0,
           },
@@ -194,14 +230,18 @@ export default function TabLayout() {
         <Tabs.Screen
           name="teacher"
           options={{
-            title: 'Create Event',
-            tabBarLabel: 'Create Event',
+            title: isStudent ? 'Available Events' : 'Create Event',
+            tabBarLabel: isStudent ? 'Available Events' : 'Create Event',
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
                 name={
-                  focused
-                    ? 'clipboard'
-                    : 'clipboard-outline'
+                  isStudent
+                    ? focused
+                      ? 'calendar'
+                      : 'calendar-outline'
+                    : focused
+                      ? 'clipboard'
+                      : 'clipboard-outline'
                 }
                 color={color}
                 size={21}
@@ -217,11 +257,7 @@ export default function TabLayout() {
             tabBarLabel: 'Profile',
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
-                name={
-                  focused
-                    ? 'person'
-                    : 'person-outline'
-                }
+                name={focused ? 'person' : 'person-outline'}
                 color={color}
                 size={21}
               />
@@ -238,7 +274,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   scanIconContainer: {
     width: 58,
     height: 58,
@@ -246,7 +281,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: -23,
   },
-
   pulseRing: {
     position: 'absolute',
     width: 52,
@@ -255,23 +289,17 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.primary,
   },
-
   scanButton: {
     width: 50,
     height: 50,
     borderRadius: 25,
     alignItems: 'center',
     justifyContent: 'center',
-
     borderWidth: 3,
     borderColor: COLORS.background,
-
     elevation: 6,
     shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.18,
     shadowRadius: 4,
   },
