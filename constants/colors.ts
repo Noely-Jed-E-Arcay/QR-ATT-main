@@ -10,6 +10,6 @@ export const COLORS = {
   shadow: '#6F4E37',        // Coffee brown
   warning: '#C97A2B',
   success: '#2E7D5B',
-  danger: '#B3261E',    
-  edit: '#696647',            // Slate gray  
+  danger: '#B3261E',
+  edit: '#696647',          // Slate gray
 } as const;

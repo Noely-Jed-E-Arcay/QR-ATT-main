@@ -1,10 +1,9 @@
-
 import Ionicons from '@expo/vector-icons/Ionicons';
 import DateTimePicker, {
   type DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -57,11 +56,11 @@ function formatDateTime(value: string | Date | null) {
 }
 
 /**
- * Student status priority:
- * 1. Attendance exists = Present
- * 2. Event ended without attendance = Absent
- * 3. Event is currently happening = Ongoing
- * 4. Event has not started = Scheduled
+ * Student event status priority:
+ * 1. A saved attendance record means Present.
+ * 2. An event that has ended without attendance means Absent.
+ * 3. An event currently in progress means Ongoing.
+ * 4. An event that has not started means Scheduled.
  */
 function getEventStatus(
   event: CloudEvent,
@@ -129,6 +128,7 @@ export default function TeacherScreen() {
   const [eventCode, setEventCode] = useState('');
   const [location, setLocation] = useState('');
   const [description, setDescription] = useState('');
+
   const [startDate, setStartDate] = useState(new Date());
   const [endDate, setEndDate] = useState(
     new Date(Date.now() + 60 * 60 * 1000),
@@ -136,6 +136,7 @@ export default function TeacherScreen() {
 
   const [dateTarget, setDateTarget] = useState<DateTarget | null>(null);
   const [saving, setSaving] = useState(false);
+
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState<'success' | 'error'>(
     'success',
@@ -144,125 +145,223 @@ export default function TeacherScreen() {
   const [createdEvent, setCreatedEvent] = useState<CloudEvent | null>(null);
   const [qrPayload, setQrPayload] = useState<string | null>(null);
 
+  // Fixing: invalidate requests when this screen loses focus or the user changes.
+  const requestVersion = useRef(0);
+  const activeUserId = useRef<string | null>(user?.id ?? null);
+  const focused = useRef(false);
+
   const isStudent = role === 'student';
   const isTeacher = role === 'teacher';
   const isAdmin = role === 'admin';
 
   /**
-   * Load events and the signed-in student's attendance records.
-   * Attendance is matched using the database event ID.
+   * Load the event list and, for students, their attendance records.
+   * The caller must supply a verified role.
    */
-  const loadEvents = useCallback(async () => {
-    setLoadingEvents(true);
-    setEventError('');
+  const loadEvents = useCallback(
+    async (verifiedRole: Role, expectedUserId: string) => {
+      const version = ++requestVersion.current;
 
-    try {
-      const result = await getAvailableEvents();
+      setLoadingEvents(true);
+      setEventError('');
 
-      if (result.error) {
-        setEventError(result.error);
-        return;
-      }
+      try {
+        const result = await getAvailableEvents();
 
-      setEvents(result.events);
-
-      if (!user) {
-        setAttendedEventIds(new Set());
-        return;
-      }
-
-      if (role === 'student') {
-        const { data: attendanceRows, error: attendanceError } =
-          await supabase
-            .from('attendance')
-            .select('event_id')
-            .eq('student_id', user.id);
-
-        if (attendanceError) {
-          console.error(
-            'Unable to load student attendance:',
-            attendanceError.message,
-          );
-
-          setEventError(
-            'Events loaded, but attendance statuses could not be retrieved. Please refresh.',
-          );
-
+        if (
+          !focused.current ||
+          version !== requestVersion.current ||
+          activeUserId.current !== expectedUserId
+        ) {
           return;
         }
 
-        setAttendedEventIds(
-          new Set(
-            (attendanceRows ?? []).map((row) => row.event_id as string),
-          ),
-        );
-      } else {
-        setAttendedEventIds(new Set());
-      }
-    } catch (error) {
-      console.error('Unable to load school events:', error);
+        if (result.error) {
+          setEventError(result.error);
+          return;
+        }
 
-      setEventError('Unable to load school events. Please try again.');
-    } finally {
-      setLoadingEvents(false);
-    }
-  }, [user, role]);
+        setEvents(result.events);
+
+        if (verifiedRole === 'student') {
+          const { data: attendanceRows, error: attendanceError } =
+            await supabase
+              .from('attendance')
+              .select('event_id')
+              .eq('student_id', expectedUserId);
+
+          if (
+            !focused.current ||
+            version !== requestVersion.current ||
+            activeUserId.current !== expectedUserId
+          ) {
+            return;
+          }
+
+          if (attendanceError) {
+            console.error(
+              'Unable to load student attendance:',
+              attendanceError.message,
+            );
+
+            setEventError(
+              'Events loaded, but attendance statuses could not be retrieved. Please refresh.',
+            );
+
+            return;
+          }
+
+          setAttendedEventIds(
+            new Set(
+              (attendanceRows ?? []).map((row) => String(row.event_id)),
+            ),
+          );
+        } else {
+          setAttendedEventIds(new Set());
+        }
+      } catch (error) {
+        if (
+          !focused.current ||
+          version !== requestVersion.current ||
+          activeUserId.current !== expectedUserId
+        ) {
+          return;
+        }
+
+        console.error('Unable to load school events:', error);
+        setEventError('Unable to load school events. Please try again.');
+      } finally {
+        if (
+          focused.current &&
+          version === requestVersion.current &&
+          activeUserId.current === expectedUserId
+        ) {
+          setLoadingEvents(false);
+        }
+      }
+    },
+    [],
+  );
+
+  /**
+   * Verify the signed-in user's profile before loading role-specific data.
+   * A missing profile or an invalid role remains unauthorized.
+   */
+  const verifyAndLoad = useCallback(
+    async (expectedUserId: string) => {
+      const version = ++requestVersion.current;
+
+      setRoleLoading(true);
+      setLoadingEvents(true);
+      setRole(null);
+      setEvents([]);
+      setAttendedEventIds(new Set());
+      setEventError('');
+
+      try {
+        const profile = await getProfile(expectedUserId);
+
+        if (
+          !focused.current ||
+          version !== requestVersion.current ||
+          activeUserId.current !== expectedUserId
+        ) {
+          return;
+        }
+
+        if (!profile || profile.id !== expectedUserId) {
+          setRole(null);
+          setEvents([]);
+          setEventError(
+            'Your account profile could not be verified. Please sign in again or contact an administrator.',
+          );
+          setLoadingEvents(false);
+          return;
+        }
+
+        if (
+          profile.role !== 'student' &&
+          profile.role !== 'teacher' &&
+          profile.role !== 'admin'
+        ) {
+          setRole(null);
+          setEvents([]);
+          setEventError('Your account role is not recognized.');
+          setLoadingEvents(false);
+          return;
+        }
+
+        setRole(profile.role);
+        setRoleLoading(false);
+
+        await loadEvents(profile.role, expectedUserId);
+      } catch (error) {
+        if (
+          !focused.current ||
+          version !== requestVersion.current ||
+          activeUserId.current !== expectedUserId
+        ) {
+          return;
+        }
+
+        console.error('Unable to verify account profile:', error);
+        setRole(null);
+        setEvents([]);
+        setAttendedEventIds(new Set());
+        setEventError(
+          'Unable to verify your account. Please try again.',
+        );
+        setLoadingEvents(false);
+      } finally {
+        if (
+          focused.current &&
+          version === requestVersion.current &&
+          activeUserId.current === expectedUserId
+        ) {
+          setRoleLoading(false);
+        }
+      }
+    },
+    [loadEvents],
+  );
 
   useFocusEffect(
     useCallback(() => {
-      let active = true;
+      focused.current = true;
+      activeUserId.current = user?.id ?? null;
 
       if (!user) {
+        requestVersion.current += 1;
         setRole(null);
         setRoleLoading(false);
         setEvents([]);
         setAttendedEventIds(new Set());
+        setEventError('');
         setLoadingEvents(false);
 
         return () => {
-          active = false;
+          focused.current = false;
+          requestVersion.current += 1;
         };
       }
 
-      setRoleLoading(true);
-
-      getProfile(user.id)
-        .then((profile) => {
-          if (active) {
-            setRole(profile?.role ?? 'student');
-          }
-        })
-        .catch((error) => {
-          console.error('Unable to load profile:', error);
-
-          if (active) {
-            setRole(null);
-          }
-        })
-        .finally(() => {
-          if (active) {
-            setRoleLoading(false);
-          }
-        });
-
       setNow(Date.now());
-      void loadEvents();
+      void verifyAndLoad(user.id);
 
       return () => {
-        active = false;
+        focused.current = false;
+        requestVersion.current += 1;
       };
-    }, [user, loadEvents]),
+    }, [user?.id, verifyAndLoad]),
   );
 
-  // Fixing: Sort newest scheduled events first.
-  // Missing or invalid start times are placed at the bottom.
+  // Fixing: show the newest scheduled events first.
+  // Events with missing or invalid start times appear last.
   const filteredEvents = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
 
     const getStartTime = (value: string | null) => {
-      if (!value) {
-        return Number.NEGATIVE_INFINITY;
-      }
+      if (!value) return Number.NEGATIVE_INFINITY;
 
       const timestamp = new Date(value).getTime();
 
@@ -273,19 +372,13 @@ export default function TeacherScreen() {
 
     return events
       .filter((event) => {
-        const status = getEventStatus(
-          event,
-          now,
-          attendedEventIds,
-        );
+        const status = getEventStatus(event, now, attendedEventIds);
 
         if (filter !== 'All' && status !== filter) {
           return false;
         }
 
-        if (!normalizedSearch) {
-          return true;
-        }
+        if (!normalizedSearch) return true;
 
         return [
           event.title,
@@ -296,9 +389,9 @@ export default function TeacherScreen() {
           value.toLowerCase().includes(normalizedSearch),
         );
       })
-      .sort((a, b) => {
-        return getStartTime(b.start_time) - getStartTime(a.start_time);
-      });
+      .sort(
+        (a, b) => getStartTime(b.start_time) - getStartTime(a.start_time),
+      );
   }, [events, filter, search, now, attendedEventIds]);
 
   const handleDateChange = (
@@ -362,11 +455,28 @@ export default function TeacherScreen() {
     setSaving(true);
 
     try {
+      // Fixing: verify the profile again before the create operation.
+      const currentProfile = await getProfile(user.id);
+
+      if (
+        !currentProfile ||
+        currentProfile.id !== user.id ||
+        (currentProfile.role !== 'teacher' &&
+          currentProfile.role !== 'admin')
+      ) {
+        setRole(null);
+        setMessageType('error');
+        setMessage(
+          'Your account could not be authorized to create events. Refresh the screen and try again.',
+        );
+        return;
+      }
+
       const result = await createEvent({
         event_code: eventCode.trim().toUpperCase(),
         title: title.trim(),
-        location: location.trim() || null,
-        description: description.trim() || null,
+        location: location.trim(),
+        description: description.trim(),
         start_time: startDate.toISOString(),
         end_time: endDate.toISOString(),
       });
@@ -398,7 +508,9 @@ export default function TeacherScreen() {
       setLocation('');
       setDescription('');
 
-      await loadEvents();
+      setNow(Date.now());
+
+      await loadEvents(currentProfile.role, user.id);
     } catch (error) {
       console.error('Unable to create event:', error);
 
@@ -413,11 +525,22 @@ export default function TeacherScreen() {
     }
   };
 
+  const refreshEvents = () => {
+    if (!user || !role) {
+      setMessageType('error');
+      setMessage('Your account role has not been verified yet.');
+      return;
+    }
+
+    setNow(Date.now());
+    void loadEvents(role, user.id);
+  };
+
   if (roleLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.muted}>Loading your account...</Text>
+        <Text style={styles.muted}>Verifying your account...</Text>
       </View>
     );
   }
@@ -430,10 +553,19 @@ export default function TeacherScreen() {
           size={38}
           color={COLORS.primary}
         />
-        <Text style={styles.pageTitle}>Unable to load account</Text>
+        <Text style={styles.pageTitle}>Unable to verify account</Text>
         <Text style={styles.muted}>
-          Please return to your dashboard and try again.
+          {eventError ||
+            'Your account profile could not be verified. Please try again.'}
         </Text>
+        {user && (
+          <AppButton
+            theme="primary"
+            title="Try Again"
+            icon="refresh-outline"
+            onPress={() => void verifyAndLoad(user.id)}
+          />
+        )}
       </View>
     );
   }
@@ -543,7 +675,7 @@ export default function TeacherScreen() {
               theme="primary"
               title="Try Again"
               icon="refresh-outline"
-              onPress={() => void loadEvents()}
+              onPress={refreshEvents}
             />
           </View>
         ) : filteredEvents.length === 0 ? (
@@ -573,11 +705,7 @@ export default function TeacherScreen() {
           </View>
         ) : (
           filteredEvents.map((event) => {
-            const status = getEventStatus(
-              event,
-              now,
-              attendedEventIds,
-            );
+            const status = getEventStatus(event, now, attendedEventIds);
 
             return (
               <View key={event.id} style={styles.eventCard}>
@@ -682,13 +810,7 @@ export default function TeacherScreen() {
           })
         )}
 
-        <Pressable
-          style={styles.reloadLink}
-          onPress={() => {
-            setNow(Date.now());
-            void loadEvents();
-          }}
-        >
+        <Pressable style={styles.reloadLink} onPress={refreshEvents}>
           <Ionicons
             name="refresh-outline"
             size={17}
@@ -711,6 +833,9 @@ export default function TeacherScreen() {
           color={COLORS.primary}
         />
         <Text style={styles.pageTitle}>Access unavailable</Text>
+        <Text style={styles.muted}>
+          Your account does not have permission to use this screen.
+        </Text>
       </View>
     );
   }
@@ -840,9 +965,7 @@ export default function TeacherScreen() {
               key={option.label}
               style={styles.filterChip}
               onPress={() =>
-                setEndDate(
-                  new Date(startDate.getTime() + option.ms),
-                )
+                setEndDate(new Date(startDate.getTime() + option.ms))
               }
             >
               <Text style={styles.filterText}>{option.label}</Text>

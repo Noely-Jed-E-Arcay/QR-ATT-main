@@ -1,4 +1,3 @@
-
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -48,39 +47,62 @@ export default function ManageEventsScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [changingStatusId, setChangingStatusId] = useState<string | null>(null);
+  const [changingStatusId, setChangingStatusId] = useState<string | null>(
+    null,
+  );
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Fixing: Recover loading and refreshing states if the database
+  // request fails or throws an unexpected error.
   const load = useCallback(async () => {
-    const result = await getAdminEvents();
+    try {
+      const result = await getAdminEvents();
 
-    if (result.error) {
-      Alert.alert('Could not load events', result.error);
-    } else {
+      if (result.error) {
+        Alert.alert('Could not load events', result.error);
+        return;
+      }
+
       setEvents(result.data);
-    }
+    } catch (error) {
+      console.error('Failed to load events:', error);
 
-    setLoading(false);
+      Alert.alert(
+        'Could not load events',
+        error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred.',
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      void load();
+    }, [load]),
   );
 
   const refresh = async () => {
+    if (refreshing) return;
+
     setRefreshing(true);
     await load();
-    setRefreshing(false);
   };
 
   const openCreate = () => {
+    if (saving) return;
+
     setEditing(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm });
     setModalVisible(true);
   };
 
   const openEdit = (event: AdminEvent) => {
+    if (saving) return;
+
     setEditing(event);
     setForm({
       event_code: event.event_code,
@@ -94,19 +116,25 @@ export default function ManageEventsScreen() {
   const closeModal = () => {
     if (saving) return;
 
-    setEditing(null);
-    setForm(emptyForm);
     setModalVisible(false);
+    setEditing(null);
+    setForm({ ...emptyForm });
   };
 
   const save = async () => {
+    // Fixing: Ignore repeated save taps while a request is in progress.
+    if (saving) return;
+
     const code = form.event_code.trim();
     const title = form.title.trim();
     const startTime = form.start_time.trim();
     const endTime = form.end_time.trim();
 
     if (!code || !title) {
-      Alert.alert('Missing information', 'Event code and title are required.');
+      Alert.alert(
+        'Missing information',
+        'Event code and title are required.',
+      );
       return;
     }
 
@@ -114,7 +142,10 @@ export default function ManageEventsScreen() {
       startTime &&
       !Number.isFinite(new Date(startTime).getTime())
     ) {
-      Alert.alert('Invalid time', 'Enter a valid event start date and time.');
+      Alert.alert(
+        'Invalid time',
+        'Enter a valid event start date and time.',
+      );
       return;
     }
 
@@ -122,7 +153,10 @@ export default function ManageEventsScreen() {
       endTime &&
       !Number.isFinite(new Date(endTime).getTime())
     ) {
-      Alert.alert('Invalid time', 'Enter a valid event end date and time.');
+      Alert.alert(
+        'Invalid time',
+        'Enter a valid event end date and time.',
+      );
       return;
     }
 
@@ -131,7 +165,10 @@ export default function ManageEventsScreen() {
       endTime &&
       new Date(endTime).getTime() <= new Date(startTime).getTime()
     ) {
-      Alert.alert('Invalid time', 'End time must be after the start time.');
+      Alert.alert(
+        'Invalid time',
+        'End time must be after the start time.',
+      );
       return;
     }
 
@@ -154,14 +191,19 @@ export default function ManageEventsScreen() {
         return;
       }
 
-      setForm(emptyForm);
-      setEditing(null);
       setModalVisible(false);
+      setEditing(null);
+      setForm({ ...emptyForm });
+
       await load();
     } catch (error) {
+      console.error('Failed to save event:', error);
+
       Alert.alert(
         'Could not save event',
-        error instanceof Error ? error.message : 'An unexpected error occurred.'
+        error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred.',
       );
     } finally {
       setSaving(false);
@@ -169,6 +211,8 @@ export default function ManageEventsScreen() {
   };
 
   const changeStatus = (event: AdminEvent) => {
+    if (changingStatusId) return;
+
     const closing = event.status !== 'closed';
     const nextStatus = closing ? 'closed' : 'open';
 
@@ -183,34 +227,46 @@ export default function ManageEventsScreen() {
           text: closing ? 'Close Event' : 'Reopen Event',
           style: closing ? 'destructive' : 'default',
           onPress: async () => {
+            if (changingStatusId) return;
+
             setChangingStatusId(event.id);
 
             try {
-              const result = await setAdminEventStatus(event.id, nextStatus);
+              const result = await setAdminEventStatus(
+                event.id,
+                nextStatus,
+              );
 
               if (result.error) {
-                Alert.alert('Could not update event status', result.error);
+                Alert.alert(
+                  'Could not update event status',
+                  result.error,
+                );
                 return;
               }
 
               await load();
             } catch (error) {
+              console.error('Failed to update event status:', error);
+
               Alert.alert(
                 'Could not update event status',
                 error instanceof Error
                   ? error.message
-                  : 'An unexpected error occurred.'
+                  : 'An unexpected error occurred.',
               );
             } finally {
               setChangingStatusId(null);
             }
           },
         },
-      ]
+      ],
     );
   };
 
   const remove = (event: AdminEvent) => {
+    if (deletingId) return;
+
     Alert.alert(
       'Delete event?',
       `Deleting "${event.title}" also removes its attendance records if your database uses ON DELETE CASCADE. To preserve attendance history, close the event instead.`,
@@ -220,6 +276,10 @@ export default function ManageEventsScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (deletingId) return;
+
+            setDeletingId(event.id);
+
             try {
               const result = await deleteAdminEvent(event.id);
 
@@ -230,16 +290,20 @@ export default function ManageEventsScreen() {
 
               await load();
             } catch (error) {
+              console.error('Failed to delete event:', error);
+
               Alert.alert(
                 'Could not delete event',
                 error instanceof Error
                   ? error.message
-                  : 'An unexpected error occurred.'
+                  : 'An unexpected error occurred.',
               );
+            } finally {
+              setDeletingId(null);
             }
           },
         },
-      ]
+      ],
     );
   };
 
@@ -269,7 +333,10 @@ export default function ManageEventsScreen() {
         style={styles.container}
         contentContainerStyle={styles.content}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={refresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void refresh()}
+          />
         }
       >
         <View style={styles.titleRow}>
@@ -282,7 +349,8 @@ export default function ManageEventsScreen() {
 
           <Pressable
             onPress={openCreate}
-            style={styles.addButton}
+            disabled={saving}
+            style={[styles.addButton, saving && styles.disabled]}
             accessibilityRole="button"
             accessibilityLabel="Create event"
           >
@@ -343,6 +411,7 @@ export default function ManageEventsScreen() {
         {filtered.map((event) => {
           const isClosed = event.status === 'closed';
           const changing = changingStatusId === event.id;
+          const deleting = deletingId === event.id;
 
           return (
             <View key={event.id} style={styles.card}>
@@ -353,7 +422,11 @@ export default function ManageEventsScreen() {
                 ]}
               >
                 <Ionicons
-                  name={isClosed ? 'lock-closed-outline' : 'calendar-outline'}
+                  name={
+                    isClosed
+                      ? 'lock-closed-outline'
+                      : 'calendar-outline'
+                  }
                   size={22}
                   color={isClosed ? COLORS.danger : COLORS.primary}
                 />
@@ -387,11 +460,11 @@ export default function ManageEventsScreen() {
                 <View style={styles.cardActions}>
                   <Pressable
                     onPress={() => changeStatus(event)}
-                    disabled={changing}
+                    disabled={Boolean(changingStatusId) || Boolean(deletingId)}
                     style={[
                       styles.statusButton,
                       isClosed ? styles.reopenButton : styles.closeButton,
-                      changing && styles.disabled,
+                      (changing || Boolean(deletingId)) && styles.disabled,
                     ]}
                   >
                     {changing ? (
@@ -402,7 +475,11 @@ export default function ManageEventsScreen() {
                     ) : (
                       <>
                         <Ionicons
-                          name={isClosed ? 'lock-open-outline' : 'lock-closed-outline'}
+                          name={
+                            isClosed
+                              ? 'lock-open-outline'
+                              : 'lock-closed-outline'
+                          }
                           size={15}
                           color={COLORS.textOnPrimary}
                         />
@@ -415,7 +492,13 @@ export default function ManageEventsScreen() {
 
                   <Pressable
                     onPress={() => openEdit(event)}
-                    style={styles.iconButton}
+                    disabled={Boolean(changingStatusId) || Boolean(deletingId)}
+                    style={[
+                      styles.iconButton,
+                      (Boolean(changingStatusId) ||
+                        Boolean(deletingId)) &&
+                        styles.disabled,
+                    ]}
                     accessibilityRole="button"
                     accessibilityLabel={`Edit ${event.title}`}
                   >
@@ -428,15 +511,28 @@ export default function ManageEventsScreen() {
 
                   <Pressable
                     onPress={() => remove(event)}
-                    style={styles.iconButton}
+                    disabled={Boolean(changingStatusId) || Boolean(deletingId)}
+                    style={[
+                      styles.iconButton,
+                      (Boolean(changingStatusId) ||
+                        Boolean(deletingId)) &&
+                        styles.disabled,
+                    ]}
                     accessibilityRole="button"
                     accessibilityLabel={`Delete ${event.title}`}
                   >
-                    <Ionicons
-                      name="trash-outline"
-                      size={19}
-                      color={COLORS.danger}
-                    />
+                    {deleting ? (
+                      <ActivityIndicator
+                        size="small"
+                        color={COLORS.danger}
+                      />
+                    ) : (
+                      <Ionicons
+                        name="trash-outline"
+                        size={19}
+                        color={COLORS.danger}
+                      />
+                    )}
                   </Pressable>
                 </View>
               </View>
@@ -459,10 +555,13 @@ export default function ManageEventsScreen() {
         )}
       </ScrollView>
 
+      {/* Fixing: Enable hardware acceleration and retain Android Back
+          handling for the event editor modal. */}
       <Modal
         visible={modalVisible}
         transparent
         animationType="slide"
+        hardwareAccelerated
         onRequestClose={closeModal}
       >
         <View style={styles.backdrop}>
@@ -483,6 +582,8 @@ export default function ManageEventsScreen() {
                 onPress={closeModal}
                 disabled={saving}
                 hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Close event form"
               >
                 <Ionicons
                   name="close"
@@ -494,6 +595,7 @@ export default function ManageEventsScreen() {
 
             <ScrollView
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
               showsVerticalScrollIndicator={false}
             >
               <Field
@@ -503,6 +605,7 @@ export default function ManageEventsScreen() {
                   setForm((old) => ({ ...old, event_code: value }))
                 }
                 placeholder="EVT-2026-0001"
+                editable={!saving}
               />
 
               <Field
@@ -512,6 +615,7 @@ export default function ManageEventsScreen() {
                   setForm((old) => ({ ...old, title: value }))
                 }
                 placeholder="School Assembly"
+                editable={!saving}
               />
 
               <Field
@@ -521,6 +625,7 @@ export default function ManageEventsScreen() {
                   setForm((old) => ({ ...old, start_time: value }))
                 }
                 placeholder="2026-10-11T09:00:00+08:00"
+                editable={!saving}
               />
 
               <Field
@@ -530,6 +635,7 @@ export default function ManageEventsScreen() {
                   setForm((old) => ({ ...old, end_time: value }))
                 }
                 placeholder="2026-10-11T10:00:00+08:00"
+                editable={!saving}
               />
 
               <Text style={styles.hint}>
@@ -552,12 +658,13 @@ export default function ManageEventsScreen() {
               )}
 
               <Pressable
-                onPress={save}
+                onPress={() => void save()}
                 disabled={saving}
                 style={[
                   styles.saveButton,
                   saving && styles.disabled,
                 ]}
+                accessibilityRole="button"
               >
                 {saving ? (
                   <ActivityIndicator color={COLORS.textOnPrimary} />
@@ -580,11 +687,13 @@ function Field({
   value,
   onChangeText,
   placeholder,
+  editable = true,
 }: {
   label: string;
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
+  editable?: boolean;
 }) {
   return (
     <View>
@@ -596,6 +705,7 @@ function Field({
         placeholderTextColor={COLORS.textSecondary}
         style={styles.input}
         autoCapitalize="none"
+        editable={editable}
       />
     </View>
   );

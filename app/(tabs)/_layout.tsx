@@ -1,8 +1,9 @@
-
-import { Tabs, useFocusEffect } from 'expo-router';
+// Fixing: Verify the account role before exposing role-based tabs.
+import { Tabs, useFocusEffect, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Easing,
   StyleSheet,
@@ -20,7 +21,6 @@ type AnimatedScanIconProps = {
 };
 
 function AnimatedScanIcon({
-  color,
   focused,
 }: AnimatedScanIconProps) {
   const floatAnimation = useRef(new Animated.Value(0)).current;
@@ -95,9 +95,7 @@ function AnimatedScanIcon({
     <Animated.View
       style={[
         styles.scanButtonWrapper,
-        {
-          transform: [{ translateY }, { scale }],
-        },
+        { transform: [{ translateY }, { scale }] },
       ]}
     >
       <Animated.View
@@ -129,6 +127,8 @@ function AnimatedScanIcon({
 
 export default function TabLayout() {
   const { user } = useAuth();
+  const router = useRouter();
+
   const [role, setRole] = useState<Role | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
@@ -145,19 +145,20 @@ export default function TabLayout() {
         };
       }
 
+      setRole(null);
       setRoleLoading(true);
 
       getProfile(user.id)
         .then((profile) => {
           if (active) {
-            setRole(profile?.role ?? 'student');
+            setRole(profile?.role ?? null);
           }
         })
         .catch((error) => {
           console.error('Unable to load tab role:', error);
 
           if (active) {
-            setRole('student');
+            setRole(null);
           }
         })
         .finally(() => {
@@ -172,8 +173,21 @@ export default function TabLayout() {
     }, [user]),
   );
 
-  // Fixing: keep Scan hidden while the role loads and for staff.
-  const isStudent = !roleLoading && role === 'student';
+  useEffect(() => {
+    if (!roleLoading && user && !role) {
+      router.replace('/login');
+    }
+  }, [roleLoading, user, role, router]);
+
+  if (roleLoading || (user && !role)) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+      </View>
+    );
+  }
+
+  const isStudent = role === 'student';
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -248,16 +262,13 @@ export default function TabLayout() {
             title: 'Scan',
             tabBarLabel: 'Scan',
             href: isStudent ? '/scan' : null,
-            tabBarIcon: ({ color, focused }) =>
+            tabBarIcon: ({ focused }) =>
               isStudent ? (
-                <AnimatedScanIcon
-                  color={color}
-                  focused={focused}
-                />
+                <AnimatedScanIcon focused={focused} color={COLORS.primary} />
               ) : (
                 <Ionicons
                   name={focused ? 'scan' : 'qr-code-outline'}
-                  color={color}
+                  color={COLORS.textSecondary}
                   size={21}
                 />
               ),
@@ -311,7 +322,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+  },
   scanButtonWrapper: {
     width: 58,
     height: 58,
@@ -320,7 +336,6 @@ const styles = StyleSheet.create({
     marginTop: -25,
     zIndex: 10,
   },
-
   scanPulseRing: {
     position: 'absolute',
     width: 54,
@@ -329,7 +344,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.primary,
   },
-
   scanIconContainer: {
     width: 52,
     height: 52,
@@ -345,7 +359,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.22,
     shadowRadius: 6,
   },
-
   scanIconContainerFocused: {
     width: 56,
     height: 56,

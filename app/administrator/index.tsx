@@ -1,6 +1,8 @@
+// Fixing: Verify administrator access before loading protected dashboard data.
+
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -24,75 +26,105 @@ export default function AdministratorDashboard() {
   const { user } = useAuth();
   const router = useRouter();
   const { width } = useWindowDimensions();
-
   const compact = width < 380;
 
-  const [dashboard, setDashboard] =
-    useState<AdminDashboard | null>(null);
+  const [dashboard, setDashboard] = useState<AdminDashboard | null>(null);
   const [adminName, setAdminName] = useState('Administrator');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authorized, setAuthorized] = useState(false);
+
+  const requestId = useRef(0);
 
   const loadDashboard = useCallback(async () => {
+    const currentRequest = ++requestId.current;
+
+    const isCurrentRequest = () => requestId.current === currentRequest;
+
+    setError(null);
+
     if (!user) {
       setDashboard(null);
       setAdminName('Administrator');
+      setAuthorized(false);
       setLoading(false);
       setError('Please sign in to view the administrator dashboard.');
       return;
     }
 
-    setError(null);
+    setLoading(true);
 
     try {
-      const [dashboardResult, profile] = await Promise.all([
-        getAdminDashboard(),
-        getProfile(user.id),
-      ]);
+      // Verify the user's profile BEFORE requesting dashboard data.
+      const profile = await getProfile(user.id);
 
-      if (dashboardResult.error) {
-        setError(dashboardResult.error);
-      } else {
-        setDashboard(dashboardResult.data);
+      if (!isCurrentRequest()) return;
+
+      if (!profile || profile.id !== user.id) {
+        setDashboard(null);
+        setAdminName('Administrator');
+        setAuthorized(false);
+        setError(
+          'Your account profile could not be verified. Please sign in again or contact an administrator.',
+        );
+        return;
       }
 
-      setAdminName(profile?.full_name?.trim() || 'Administrator');
+      if (profile.role !== 'admin') {
+        setDashboard(null);
+        setAdminName('Administrator');
+        setAuthorized(false);
+        setError(
+          'Access denied. This dashboard is available to administrators only.',
+        );
+        return;
+      }
+
+      setAuthorized(true);
+      setAdminName(profile.full_name?.trim() || 'Administrator');
+
+      const result = await getAdminDashboard();
+
+      if (!isCurrentRequest()) return;
+
+      if (result.error || !result.data) {
+        setDashboard(null);
+        setError(
+          result.error || 'Unable to retrieve dashboard information.',
+        );
+        return;
+      }
+
+      setDashboard(result.data);
     } catch (err) {
+      if (!isCurrentRequest()) return;
+
       console.error('Failed to load administrator dashboard:', err);
-      setError(
-        'Unable to load dashboard information. Please try again.',
-      );
+      setDashboard(null);
+      setError('Unable to load dashboard information. Please try again.');
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [user]);
 
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-
-      const load = async () => {
-        if (!active) return;
-        await loadDashboard();
-      };
-
-      void load();
+      void loadDashboard();
 
       return () => {
-        active = false;
+        // Ignore responses from requests started before leaving this screen.
+        requestId.current += 1;
       };
     }, [loadDashboard]),
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(() => {
     setRefreshing(true);
-
-    try {
-      await loadDashboard();
-    } finally {
-      setRefreshing(false);
-    }
+    void loadDashboard();
   }, [loadDashboard]);
 
   const managementActions = [
@@ -150,11 +182,45 @@ export default function AdministratorDashboard() {
           style={styles.loadingSpinner}
         />
 
-        <Text style={styles.loadingTitle}>Loading dashboard</Text>
-
+        <Text style={styles.loadingTitle}>Verifying administrator</Text>
         <Text style={styles.muted}>
-          Retrieving the latest school records.
+          Checking your account and retrieving school records.
         </Text>
+      </View>
+    );
+  }
+
+  // Fail closed: do not render management actions for an unverified account.
+  if (!authorized) {
+    return (
+      <View style={styles.center}>
+        <View style={styles.deniedIcon}>
+          <Ionicons
+            name="lock-closed-outline"
+            size={30}
+            color={COLORS.danger}
+          />
+        </View>
+
+        <Text style={styles.deniedTitle}>Dashboard unavailable</Text>
+
+        <Text style={styles.deniedDescription}>
+          {error || 'Your administrator access could not be verified.'}
+        </Text>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            void loadDashboard();
+          }}
+          style={({ pressed }) => [
+            styles.primaryButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Ionicons name="refresh-outline" size={17} color={COLORS.textOnPrimary} />
+          <Text style={styles.primaryButtonText}>Try again</Text>
+        </Pressable>
       </View>
     );
   }
@@ -209,9 +275,7 @@ export default function AdministratorDashboard() {
         <View style={styles.welcomeTop}>
           <View style={styles.welcomeLabelContainer}>
             <View style={styles.statusDot} />
-            <Text style={styles.welcomeLabel}>
-              ADMIN CONTROL CENTER
-            </Text>
+            <Text style={styles.welcomeLabel}>ADMIN CONTROL CENTER</Text>
           </View>
 
           <Ionicons
@@ -243,7 +307,7 @@ export default function AdministratorDashboard() {
         </View>
       </View>
 
-      {/* ERROR */}
+      {/* DASHBOARD DATA ERROR */}
       {error && (
         <View style={styles.errorCard}>
           <Ionicons
@@ -262,7 +326,6 @@ export default function AdministratorDashboard() {
             <Pressable
               accessibilityRole="button"
               onPress={() => {
-                setLoading(true);
                 void loadDashboard();
               }}
               style={({ pressed }) => [
@@ -283,49 +346,63 @@ export default function AdministratorDashboard() {
         icon="analytics-outline"
       />
 
-      <View style={styles.statsGrid}>
-        <StatCard
-          compact={compact}
-          icon="people-outline"
-          label="Total Users"
-          value={totalUsers}
-        />
+      {dashboard ? (
+        <View style={styles.statsGrid}>
+          <StatCard
+            compact={compact}
+            icon="people-outline"
+            label="Total Users"
+            value={totalUsers}
+          />
 
-        <StatCard
-          compact={compact}
-          icon="school-outline"
-          label="Students"
-          value={totalStudents}
-        />
+          <StatCard
+            compact={compact}
+            icon="school-outline"
+            label="Students"
+            value={totalStudents}
+          />
 
-        <StatCard
-          compact={compact}
-          icon="briefcase-outline"
-          label="Teachers"
-          value={totalTeachers}
-        />
+          <StatCard
+            compact={compact}
+            icon="briefcase-outline"
+            label="Teachers"
+            value={totalTeachers}
+          />
 
-        <StatCard
-          compact={compact}
-          icon="shield-checkmark-outline"
-          label="Administrators"
-          value={totalAdmins}
-        />
+          <StatCard
+            compact={compact}
+            icon="shield-checkmark-outline"
+            label="Administrators"
+            value={totalAdmins}
+          />
 
-        <StatCard
-          compact={compact}
-          icon="calendar-outline"
-          label="Events"
-          value={totalEvents}
-        />
+          <StatCard
+            compact={compact}
+            icon="calendar-outline"
+            label="Events"
+            value={totalEvents}
+          />
 
-        <StatCard
-          compact={compact}
-          icon="checkmark-circle-outline"
-          label="Attendance"
-          value={totalAttendance}
-        />
-      </View>
+          <StatCard
+            compact={compact}
+            icon="checkmark-circle-outline"
+            label="Attendance"
+            value={totalAttendance}
+          />
+        </View>
+      ) : (
+        <View style={styles.emptyCard}>
+          <Ionicons
+            name="cloud-offline-outline"
+            size={26}
+            color={COLORS.primary}
+          />
+          <Text style={styles.emptyTitle}>Statistics unavailable</Text>
+          <Text style={styles.emptyDescription}>
+            Refresh the dashboard to try loading the latest records.
+          </Text>
+        </View>
+      )}
 
       {/* MANAGEMENT */}
       <SectionHeading
@@ -485,19 +562,12 @@ function StatCard({
   compact: boolean;
 }) {
   return (
-    <View
-      style={[
-        styles.statCard,
-        compact && styles.statCardCompact,
-      ]}
-    >
+    <View style={[styles.statCard, compact && styles.statCardCompact]}>
       <View style={styles.statIcon}>
         <Ionicons name={icon} size={19} color={COLORS.primary} />
       </View>
 
-      <Text style={styles.statValue}>
-        {value.toLocaleString()}
-      </Text>
+      <Text style={styles.statValue}>{value.toLocaleString()}</Text>
 
       <Text style={styles.statLabel} numberOfLines={2}>
         {label}
@@ -547,10 +617,7 @@ function ManagementCard({
         {title}
       </Text>
 
-      <Text
-        style={styles.managementDescription}
-        numberOfLines={3}
-      >
+      <Text style={styles.managementDescription} numberOfLines={3}>
         {description}
       </Text>
 
@@ -622,6 +689,49 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 6,
     textAlign: 'center',
+  },
+
+  deniedIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 20,
+    backgroundColor: '#FDECEC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+
+  deniedTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 19,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+
+  deniedDescription: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 18,
+  },
+
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+
+  primaryButtonText: {
+    color: COLORS.textOnPrimary,
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   // HEADER

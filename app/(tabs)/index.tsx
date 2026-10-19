@@ -1,4 +1,4 @@
-
+// Fixing: Verify profile roles before showing role-specific dashboard actions.
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
@@ -38,8 +38,9 @@ export default function Index() {
   const { user } = useAuth();
   const { width } = useWindowDimensions();
 
-  const [role, setRole] = useState<UserRole>('student');
+  const [role, setRole] = useState<UserRole | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
+  const [roleError, setRoleError] = useState('');
 
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loadingAnnouncements, setLoadingAnnouncements] = useState(true);
@@ -57,15 +58,19 @@ export default function Index() {
 
   const isSmallScreen = width < 380;
 
+  // Fixing: Do not assume a missing or unreadable profile is a student.
   const loadDashboard = useCallback(async () => {
     setLoadingRole(true);
     setLoadingAnnouncements(true);
     setLoadingEvents(true);
+
+    setRole(null);
+    setRoleError('');
     setAnnouncementError('');
     setEventError('');
 
     if (!user) {
-      setRole('student');
+      setRoleError('Please sign in to view your dashboard.');
       setAnnouncements([]);
       setEvents([]);
       setLoadingRole(false);
@@ -77,13 +82,17 @@ export default function Index() {
     try {
       const profile = await getProfile(user.id);
 
-      const profileRole: UserRole =
-        profile?.role === 'admin'
-          ? 'admin'
-          : profile?.role === 'teacher'
-            ? 'teacher'
-            : 'student';
+      if (!profile) {
+        setRole(null);
+        setRoleError(
+          'Your account profile could not be verified. Please sign in again or contact your administrator.',
+        );
+        setAnnouncements([]);
+        setEvents([]);
+        return;
+      }
 
+      const profileRole: UserRole = profile.role;
       setRole(profileRole);
 
       const [announcementResult, eventResult] = await Promise.all([
@@ -91,13 +100,14 @@ export default function Index() {
         getAvailableEvents(),
       ]);
 
-      // Fixing: show the newest published announcements first.
+      // Fixing: Sort announcements from newest to oldest.
       const sortedAnnouncements = [
         ...(announcementResult.data ?? []),
       ].sort((a, b) => {
         const dateA = a.published_at
           ? new Date(a.published_at).getTime()
           : 0;
+
         const dateB = b.published_at
           ? new Date(b.published_at).getTime()
           : 0;
@@ -113,13 +123,14 @@ export default function Index() {
         );
       }
 
-      // Fixing: sort events by scheduled date AND time, newest first.
-      // Events without a valid start time are placed at the bottom.
+      // Fixing: Sort events by start time, newest first.
+      // Invalid or missing dates are placed at the bottom.
       const sortedEvents = [...(eventResult.events ?? [])].sort(
         (a, b) => {
           const dateA = a.start_time
             ? new Date(a.start_time).getTime()
             : Number.NEGATIVE_INFINITY;
+
           const dateB = b.start_time
             ? new Date(b.start_time).getTime()
             : Number.NEGATIVE_INFINITY;
@@ -127,6 +138,7 @@ export default function Index() {
           const validDateA = Number.isNaN(dateA)
             ? Number.NEGATIVE_INFINITY
             : dateA;
+
           const validDateB = Number.isNaN(dateB)
             ? Number.NEGATIVE_INFINITY
             : dateB;
@@ -145,6 +157,12 @@ export default function Index() {
     } catch (error) {
       console.error('Failed to load dashboard:', error);
 
+      setRole(null);
+      setRoleError(
+        'Unable to verify your account. Please refresh or sign in again.',
+      );
+      setAnnouncements([]);
+      setEvents([]);
       setAnnouncementError(
         'Unable to load announcements. Check your connection and try again.',
       );
@@ -160,7 +178,19 @@ export default function Index() {
 
   useFocusEffect(
     useCallback(() => {
-      void loadDashboard();
+      let active = true;
+
+      // Fixing: Avoid updating dashboard state after this screen loses focus.
+      const runLoad = async () => {
+        if (!active) return;
+        await loadDashboard();
+      };
+
+      void runLoad();
+
+      return () => {
+        active = false;
+      };
     }, [loadDashboard]),
   );
 
@@ -217,12 +247,22 @@ export default function Index() {
     void loadDashboard();
   };
 
+  // Fixing: Route verified users to the appropriate event workspace.
   const openEvents = () => {
-    if (isAdministrator) {
-      router.push('/administrator');
-    } else {
-      router.push('/teacher');
+    if (loadingRole || !role) {
+      Alert.alert(
+        'Account not verified',
+        'Please wait until your account role has been verified.',
+      );
+      return;
     }
+
+    if (role === 'admin') {
+      router.push('/administrator');
+      return;
+    }
+
+    router.push('/(tabs)/teacher');
   };
 
   const openAnnouncement = async (
@@ -272,14 +312,12 @@ export default function Index() {
     }
   };
 
-  // Fixing: the dashboard summary uses the latest scheduled event.
   const nextEvent = events[0];
 
   const unreadCount = announcements.filter(
     (announcement) => !announcement.is_read,
   ).length;
 
-  // Fixing: display only three announcement summaries by default.
   const visibleAnnouncements = showAllAnnouncements
     ? announcements
     : announcements.slice(0, ANNOUNCEMENT_PREVIEW_LIMIT);
@@ -308,15 +346,57 @@ export default function Index() {
       ? 'calendar-outline'
       : 'qr-code-outline';
 
+  // Fixing: Do not navigate from quick actions before role verification.
   const handleQuickAction = () => {
-    if (isAdministrator) {
+    if (loadingRole || !role) {
+      Alert.alert(
+        'Account not verified',
+        'Your account role could not be verified. Please try again.',
+      );
+      return;
+    }
+
+    if (role === 'admin') {
       router.push('/administrator');
-    } else if (isTeacher) {
-      router.push('/teacher');
+    } else if (role === 'teacher') {
+      router.push('/(tabs)/teacher');
     } else {
       router.push('/scan');
     }
   };
+
+  // Fixing: Do not render role-specific shortcuts for an unverified account.
+  if (!loadingRole && !role) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.verificationContainer}>
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={42}
+            color={COLORS.primary}
+          />
+
+          <Text style={styles.verificationTitle}>
+            Dashboard unavailable
+          </Text>
+
+          <Text style={styles.verificationMessage}>
+            {roleError ||
+              'Your account role could not be verified.'}
+          </Text>
+
+          <View style={styles.verificationButton}>
+            <AppButton
+              theme="primary"
+              title="Try Again"
+              icon="refresh-outline"
+              onPress={refreshDashboard}
+            />
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -449,7 +529,7 @@ export default function Index() {
                   icon="calendar-outline"
                   title="Manage Events"
                   description="Create and manage events"
-                  onPress={() => router.push('/teacher')}
+                  onPress={() => router.push('/(tabs)/teacher')}
                 />
 
                 <ShortcutCard
@@ -568,6 +648,7 @@ export default function Index() {
                       ? 'No available events'
                       : `${events.length} available event${events.length === 1 ? '' : 's'}`}
                   </Text>
+
                   <Ionicons
                     name="chevron-forward"
                     size={19}
@@ -591,6 +672,7 @@ export default function Index() {
                         size={14}
                         color={COLORS.textSecondary}
                       />
+
                       <Text style={styles.nextEventText}>
                         Latest scheduled event: {nextEvent.title}
                       </Text>
@@ -856,6 +938,7 @@ export default function Index() {
                     size={15}
                     color={COLORS.primary}
                   />
+
                   <Text style={styles.modalDate}>
                     Published{' '}
                     {formatAnnouncementDate(
@@ -870,6 +953,7 @@ export default function Index() {
                     size={15}
                     color={COLORS.primary}
                   />
+
                   <Text style={styles.modalDate}>
                     Audience:{' '}
                     {selectedAnnouncement.target_audience === 'all'
@@ -962,6 +1046,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 24,
+  },
+  verificationContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  verificationTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginTop: 14,
+  },
+  verificationMessage: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  verificationButton: {
+    marginTop: 18,
+    width: '100%',
+    maxWidth: 220,
   },
   headerContainer: {
     alignItems: 'center',

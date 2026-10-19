@@ -47,6 +47,7 @@ export default function AnnouncementsScreen() {
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [editing, setEditing] = useState<Announcement | null>(null);
   const [title, setTitle] = useState('');
@@ -58,6 +59,7 @@ export default function AnnouncementsScreen() {
 
   const isAdmin = role === 'admin';
 
+  // Fixing: Keep loading states recoverable when a request fails.
   const loadAnnouncements = useCallback(async () => {
     if (!user) {
       setRole('student');
@@ -116,6 +118,22 @@ export default function AnnouncementsScreen() {
     }, [loadAnnouncements]),
   );
 
+  function resetForm() {
+    setEditing(null);
+    setTitle('');
+    setMessage('');
+    setAudience('all');
+    setPublished(true);
+    setError('');
+  }
+
+  function closeForm() {
+    if (saving) return;
+
+    setModalVisible(false);
+    resetForm();
+  }
+
   function openCreateForm() {
     if (!isAdmin) {
       Alert.alert(
@@ -125,12 +143,7 @@ export default function AnnouncementsScreen() {
       return;
     }
 
-    setEditing(null);
-    setTitle('');
-    setMessage('');
-    setAudience('all');
-    setPublished(true);
-    setError('');
+    resetForm();
     setModalVisible(true);
   }
 
@@ -153,6 +166,9 @@ export default function AnnouncementsScreen() {
   }
 
   async function handleSave() {
+    // Fixing: Prevent repeated taps from submitting duplicate requests.
+    if (saving) return;
+
     if (!user) {
       Alert.alert('Session required', 'Please sign in again.');
       return;
@@ -197,14 +213,19 @@ export default function AnnouncementsScreen() {
         return;
       }
 
+      const wasEditing = Boolean(editing);
+      const wasPublished = published;
+
       setModalVisible(false);
+      resetForm();
+
       await loadAnnouncements();
 
       Alert.alert(
         'Success',
-        editing
+        wasEditing
           ? 'Announcement updated.'
-          : published
+          : wasPublished
             ? 'Announcement published.'
             : 'Announcement saved as a draft.',
       );
@@ -227,6 +248,8 @@ export default function AnnouncementsScreen() {
       return;
     }
 
+    if (deletingId) return;
+
     Alert.alert(
       'Delete announcement?',
       `“${item.title}” will be permanently deleted.`,
@@ -236,6 +259,10 @@ export default function AnnouncementsScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (deletingId) return;
+
+            setDeletingId(item.id);
+
             try {
               const result = await deleteAnnouncement(item.id);
 
@@ -252,6 +279,8 @@ export default function AnnouncementsScreen() {
                 'Delete failed',
                 'Unable to delete this announcement.',
               );
+            } finally {
+              setDeletingId(null);
             }
           },
         },
@@ -308,6 +337,7 @@ export default function AnnouncementsScreen() {
           <Pressable
             style={styles.retryButton}
             onPress={() => router.back()}
+            accessibilityRole="button"
           >
             <Text style={styles.retryText}>Go back</Text>
           </Pressable>
@@ -394,6 +424,7 @@ export default function AnnouncementsScreen() {
           <Pressable
             accessibilityRole="button"
             onPress={() => void loadAnnouncements()}
+            disabled={loading}
             style={styles.refreshButton}
           >
             <Ionicons
@@ -430,6 +461,7 @@ export default function AnnouncementsScreen() {
             <Pressable
               onPress={() => void loadAnnouncements()}
               style={styles.retryButton}
+              accessibilityRole="button"
             >
               <Text style={styles.retryText}>Try again</Text>
             </Pressable>
@@ -504,8 +536,12 @@ export default function AnnouncementsScreen() {
               <View style={styles.cardActions}>
                 <Pressable
                   accessibilityRole="button"
+                  disabled={Boolean(deletingId)}
                   onPress={() => openEditForm(item)}
-                  style={styles.editButton}
+                  style={[
+                    styles.editButton,
+                    deletingId && styles.disabledButton,
+                  ]}
                 >
                   <Ionicons
                     name="create-outline"
@@ -517,15 +553,28 @@ export default function AnnouncementsScreen() {
 
                 <Pressable
                   accessibilityRole="button"
+                  disabled={Boolean(deletingId)}
                   onPress={() => confirmDelete(item)}
-                  style={styles.deleteButton}
+                  style={[
+                    styles.deleteButton,
+                    deletingId && styles.disabledButton,
+                  ]}
                 >
-                  <Ionicons
-                    name="trash-outline"
-                    size={17}
-                    color={COLORS.danger}
-                  />
-                  <Text style={styles.deleteButtonText}>Delete</Text>
+                  {deletingId === item.id ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={COLORS.danger}
+                    />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="trash-outline"
+                        size={17}
+                        color={COLORS.danger}
+                      />
+                      <Text style={styles.deleteButtonText}>Delete</Text>
+                    </>
+                  )}
                 </Pressable>
               </View>
             </View>
@@ -539,13 +588,13 @@ export default function AnnouncementsScreen() {
         </Text>
       </ScrollView>
 
+      {/* Fixing: Use a hardware-accelerated native modal and
+          consistently reset form state when it closes on Android. */}
       <Modal
         visible={modalVisible}
         animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => {
-          if (!saving) setModalVisible(false);
-        }}
+        hardwareAccelerated
+        onRequestClose={closeForm}
       >
         <SafeAreaView
           style={styles.modalContainer}
@@ -560,7 +609,7 @@ export default function AnnouncementsScreen() {
               accessibilityRole="button"
               accessibilityLabel="Close form"
               disabled={saving}
-              onPress={() => setModalVisible(false)}
+              onPress={closeForm}
               style={styles.closeButton}
             >
               <Ionicons
@@ -574,6 +623,7 @@ export default function AnnouncementsScreen() {
           <ScrollView
             contentContainerStyle={styles.formContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
           >
             <Text style={styles.fieldLabel}>Title</Text>
             <TextInput
@@ -584,6 +634,7 @@ export default function AnnouncementsScreen() {
               maxLength={120}
               style={styles.input}
               editable={!saving}
+              returnKeyType="next"
             />
 
             <Text style={styles.fieldLabel}>Message</Text>
@@ -609,11 +660,13 @@ export default function AnnouncementsScreen() {
                   <Pressable
                     key={option.value}
                     accessibilityRole="button"
-                    accessibilityState={{ selected }}
+                    accessibilityState={{ selected, disabled: saving }}
+                    disabled={saving}
                     onPress={() => setAudience(option.value)}
                     style={[
                       styles.audienceOption,
                       selected && styles.audienceOptionSelected,
+                      saving && styles.disabledButton,
                     ]}
                   >
                     <Ionicons
@@ -991,6 +1044,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
+  disabledButton: {
+    opacity: 0.55,
+  },
   footerNote: {
     color: COLORS.textSecondary,
     fontSize: 10,
@@ -1126,8 +1182,5 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '800',
-  },
-  disabledButton: {
-    opacity: 0.65,
   },
 });

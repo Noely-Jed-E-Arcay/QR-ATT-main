@@ -1,8 +1,6 @@
-// Fixing: Keep the root navigator mounted and centralize auth redirects.
-
-import { useEffect } from 'react';
+// Fixing: Centralize authentication and role-aware redirects.
+import { useEffect, useRef } from 'react';
 import {
-  Redirect,
   Stack,
   useRouter,
   useSegments,
@@ -15,12 +13,14 @@ import {
 
 import { COLORS } from '@/constants/colors';
 import { useAuth } from '@/lib/auth';
+import { getProfile } from '@/lib/profiles';
 
 export default function RootLayout() {
   const { session, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
+  const redirectingRef = useRef(false);
   const currentRoute = segments[0];
 
   const inAuthGroup =
@@ -38,14 +38,58 @@ export default function RootLayout() {
   useEffect(() => {
     if (loading) return;
 
-    if (!session && inProtectedGroup) {
-      router.replace('/login');
-      return;
+    let cancelled = false;
+
+    async function handleRedirect() {
+      if (!session) {
+        redirectingRef.current = false;
+
+        if (inProtectedGroup) {
+          router.replace('/login');
+        }
+
+        return;
+      }
+
+      if (!inAuthGroup) return;
+      if (redirectingRef.current) return;
+
+      redirectingRef.current = true;
+
+      try {
+        const profile = await getProfile(session.user.id);
+
+        if (cancelled) return;
+
+        if (!profile) {
+          router.replace('/login');
+          return;
+        }
+
+        if (profile.role === 'admin') {
+          router.replace('/administrator');
+          return;
+        }
+
+        router.replace('/(tabs)');
+      } catch (error) {
+        console.error('Role-aware redirect failed:', error);
+
+        if (!cancelled) {
+          router.replace('/login');
+        }
+      } finally {
+        if (!cancelled) {
+          redirectingRef.current = false;
+        }
+      }
     }
 
-    if (session && inAuthGroup) {
-      router.replace('/(tabs)');
-    }
+    void handleRedirect();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     session,
     loading,
